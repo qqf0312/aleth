@@ -138,6 +138,13 @@ void Client::init(p2p::Host& _extNet, fs::path const& _dbPath,
         m_warpHost = warpCapability;
     }
 
+    // create Eurasure capability
+    auto eraFace = _extNet.capabilityHost();
+    auto eraCap  = std::make_shared<dev::p2p::ErasureCapability>(eraFace);
+    _extNet.registerCapability(eraCap);
+    m_eraCap = eraCap;
+
+
     doWork(false);
 }
 

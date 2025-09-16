@@ -34,6 +34,16 @@ hunter_config(
     CMAKE_ARGS BUILD_GMOCK=OFF gtest_force_shared_crt=ON
 )
 
+# cmake/Hunter/config.cmake
+hunter_config(crc32c VERSION 1.0.5-patched
+  URL  "https://codeload.github.com/hunter-packages/crc32c/tar.gz/refs/tags/hunter-1.0.5"
+  SHA1 dc7fa8cb877b9cb12a4e22e553087fdd6ce28cce
+)
+
+
+
+
+
 if (MSVC)
     hunter_config(
         libscrypt

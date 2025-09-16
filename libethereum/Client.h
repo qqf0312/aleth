@@ -28,6 +28,7 @@
 #include <thread>
 
 #include <boost/filesystem/path.hpp>
+#include <libp2p/ec/ErasureCapability.h>
 
 
 namespace dev
@@ -332,6 +333,7 @@ protected:
 
     std::weak_ptr<EthereumCapability> m_host;
     std::weak_ptr<WarpCapability> m_warpHost;
+    std::weak_ptr<dev::p2p::ErasureCapability> m_eraCap;
 
     std::condition_variable m_signalled;
     Mutex x_signalled;

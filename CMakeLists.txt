@@ -14,6 +14,16 @@ include(CableBuildType)
 include(CableToolchains)
 include(GNUInstallDirs)
 
+# 要求 CMake 使用 g++-9 作为编译器
+set(CMAKE_C_COMPILER /usr/bin/gcc-9)
+set(CMAKE_CXX_COMPILER /usr/bin/g++-9)
+
+# 指定 C++ 标准（g++9 完全支持 C++17）
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+
 cable_configure_toolchain(DEFAULT cxx14-pic)
 
 set(ETH_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}/cmake" CACHE PATH "The path to the cmake directory")
