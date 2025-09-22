@@ -317,6 +317,10 @@ public:
 
     ChangeLog const& changeLog() const { return m_changeLog; }
 
+    void cacheClear() { return m_cache.clear(); }
+
+    SecureTrieDB<Address, OverlayDB> get_m_state() { return m_state; } 
+
 private:
     /// Turns all "touched" empty accounts into non-alive accounts.
     void removeEmptyAccounts();
