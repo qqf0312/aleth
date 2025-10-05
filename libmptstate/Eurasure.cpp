@@ -4,6 +4,7 @@
 
 // #include "Eurasure-P2P.h"
 // #include "VCGroup.h"
+#include "BMT.h"
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <fstream>
@@ -1797,55 +1798,7 @@ bool Eurasure::verifyChunkMerkleRoot(
     // return roots == merkleroot ? true : false;
     return true;
 }
-// bool Eurasure::verifyChunkMerkleRoot(
-//     std::map<int, std::map<int, std::string>>& level_to_chunk, int
-//     block_number, int chunk_pos)
-// {
-//     // read merkleroot which the chunk has been contained
-//     int max_depth = floor(log2(group_len));
-//     int counts = 0;
-//     std::string tmp = "";
-//     std::string left, right, values;
-//     std::string roots = "";
-//     std::string merkleroot;
-//     string mid = "+";
 
-//     std::string key_root = DecIntToHexStr((unsigned int)block_number)
-//                                .append(mid.append(DecIntToHexStr((unsigned
-//                                int)chunk_pos)));
-//     vc_db->Get(ReadOptions(), key_root, &merkleroot);
-//     // std::cout << "merkleroot =" << merkleroot << std::endl;
-
-//     for (int j = max_depth; j >= 1; --j)
-//     {
-//         if (j == max_depth)
-//         {
-//             left = sha256(level_to_chunk[j][0]).hex();
-//             right = sha256(level_to_chunk[j][1]).hex();
-//             values = sha256(left.append(right)).hex();
-//             int r_o_l = level_to_chunk.find(j - 1)->second.begin()->first;
-//             level_to_chunk[j - 1].insert(make_pair((r_o_l + 1) % 2, values));
-//         }
-//         else
-//         {
-//             left = level_to_chunk[j][0];
-//             right = level_to_chunk[j][1];
-//             values = sha256(left.append(right)).hex();
-//             if (j != 1)
-//             {
-//                 int r_o_l = level_to_chunk.find(j -
-//                 1)->second.begin()->first; level_to_chunk[j -
-//                 1].insert(make_pair((r_o_l + 1) % 2, values));
-//             }
-//             else
-//                 roots = values;
-//         }
-//     }
-//     // std::cout << "verifyChunkMerkleRoot  " << roots << std::endl;
-//     assert(roots == merkleroot);
-//     std::cout << "verifyChunkMerkleRoot successfully!" << std::endl;
-//     return roots == merkleroot ? true : false;
-// }
 std::string Eurasure::localReadState(
     unsigned int block_num, unsigned int group_id, unsigned int chunk_pos, std::string key)
 {
@@ -1969,50 +1922,6 @@ void Eurasure::readChunk(unsigned int coding_epoch, std::string key, std::string
     // readChunk(coding_epoch, group_id, chunk_pos, out);
 }
 
-/*
-void Eurasure::readChunk(
-    unsigned int coding_epoch, unsigned group_id, unsigned chunk_pos, std::string& out)
-{
-    int* chunk_set = get_distinct_chunk_set(coding_epoch);
-    int res = chunk_set[chunk_pos];
-    if (res < 0)
-    {
-        res += (ec_k + ec_m);
-    }
-    // 2021-11-7
-    if (ec_nodeid != ec_sealers[res])
-    {
-        ec_eurasure_p2p->requestChunk(coding_epoch, group_id, chunk_pos, ec_sealers[res]);
-        while (ec_eurasure_p2p->chunk_data_map.find(GetChunkDataKey(
-                   coding_epoch, group_id, chunk_pos)) == ec_eurasure_p2p->chunk_data_map.end())
-            sleep(0.1);
-        auto read_acc = ec_eurasure_p2p->chunk_data_map.find(
-            GetChunkDataKey(coding_epoch, group_id, chunk_pos));
-        out = read_acc->second;
-    }
-    else
-    {
-        std::vector<std::string> request_chunk_and_merkle_hash =
-            readChunkAndComputeMerkleHashs(coding_epoch, chunk_pos, group_id);
-
-        
-        if (!verifyChunkMerkleRoot(
-                request_chunk_and_merkle_hash, coding_epoch, chunk_pos, group_id))
-        {
-            std::cout << "the chunks is incorrect!" << std::endl;
-        }
-        
-        
-        int max_depth = floor(log2(getGroupLen()));
-        int state_in_chunk_pos = group_id & 0x01;
-        out = request_chunk_and_merkle_hash[0];
-    }
-    // std::string db_key = GetChunkDataKey(coding_epoch, group_id, chunk_pos);
-    // Status status = ec_db->Get(ReadOptions(), db_key, &out);
-    // assert(status.ok());
-}
-*/
-
 inline std::string ecDecToHex(unsigned int num)
 {
     std::ostringstream buffer;
@@ -2080,39 +1989,7 @@ std::string Eurasure::getKVAndProof(std::string& data, std::string const& key, i
 
     return "";
 }
-// bool Eurasure::checkState(std::string const& key, std::string const& data,
-//     std::string const& maincommit, std::string const& maincommit_proof, int main_position,
-//     std::string const& subcommit, std::string const& subcommit_proof, int sub_position,
-//     std::string& value)
-// {
-//     int kv_len = data.size() - 3 * proof_and_commit_len;
-//     // std::cout << "kv_len = " << kv_len << std::endl;
-//     int count = 0;
-//     // while (count < kv_len) {
-//     //     if (!strcmp(key.c_str(), data.substr(count, 32).c_str())) {
-//     //         value = data.substr(count + 32, 4);
-//     //     }
-//     //     count += one_state_with_kv_size;
-//     // }
-//     // return true;
-//     // do verify
-//     if (VCGroup::verify(data.substr(0, kv_len), maincommit, maincommit_proof, main_position,
-//             subcommit, subcommit_proof, sub_position))
-//     {
-//         int count = 0;
-//         while (count < kv_len)
-//         {
-//             if (!strcmp(key.c_str(), data.substr(count, 32).c_str()))
-//             {
-//                 value = data.substr(count + 32, 4);
-//             }
-//             count += one_state_with_kv_size;
-//         }
-//         return true;
-//     }
-//     else
-//         return false;
-// }
+
 static inline std::string ecstr2fixstr(std::string str)
 {
     int len = str.length();
@@ -2124,96 +2001,7 @@ static inline std::string ecstr2fixstr(std::string str)
     }
     return str.substr(len - 4, 4);
 }
-// void Eurasure::initTestStates(unsigned int block_number)
-// {
-//     double starttime = GetTime();
-//     std::map<int, dev::StringMap> state_storage;
-//     if (block_number >= 1)
-//     {
-//         VCGroup* vcGroup = new VCGroup(block_number);
 
-//         std::hash<unsigned int> block_hash;
-//         unsigned int seed = block_hash(block_number);
-//         std::mt19937 generator(seed);
-//         uniform_int_distribution<long long> dist(4000,4000);
-//         size_t state_size = dist(generator);
-//         seed = block_hash(block_number);
-//         std::mt19937 rand_num(seed);
-//         // std::string proof(49, '9');
-//         // state_storage[block_number] = dev::StringMap();
-//         // tmp_states_size += state_size;
-//         for (size_t i = 0; i < state_size; i++)
-//         {
-//             // int key = i;
-//             std::string key_str;
-
-//             if (block_number % 5 == 0)
-//                 key_str =
-//                     "0a634a3406f274792a18b173f8e7a251f8abaf56d1840bdec54ce15a9d1633061d6fa9a7b4b5d5"
-//                     "420675bf359046afd61a3bba11d44ad32fc0c3ace6fb416f1d";
-//             else
-//                 key_str = sha256(boost::lexical_cast<string>(rand_num())).hex();
-
-//             int value = 1;
-//             // int pos = ecComputePostion(key_str.substr(0, 32), getECGroupNum());
-//             // int sub_pos = ecComputePostion(key_str.substr(0, 32), getInitVCSize());
-
-//             if (state_storage.find(block_number) == state_storage.end())
-//             {
-//                 dev::StringMap key_to_value;
-
-
-//                 key_to_value[key_str.substr(0, 32)] = ecstr2fixstr(toString(value));
-//                 state_storage[block_number] = key_to_value;
-//             }
-//             else
-//             {
-//                 if (state_storage[block_number].find(key_str.substr(0, 32)) ==
-//                     state_storage[block_number].end())
-//                     state_storage[block_number][key_str.substr(0, 32)] =
-//                         ecstr2fixstr(toString(value));
-//                 else
-//                     state_storage[block_number][key_str.substr(0, 32)].append(
-//                         ecstr2fixstr(toString(value)));
-//             }
-//         }
-//         // int len = state_storage[block_number].size();
-//         // bf::basic_bloom_filter bf(hashers, max_state_size);
-//         // for (auto it = state_storage[block_number].begin(); it != state_storage[block_number].end();
-//         //      it++)
-//         //     bf.add(it->first.substr(0, 32));
-//         // std::stringstream ofs;
-//         // boost::archive::binary_oarchive oa(ofs);
-//         // oa << bf.storage();
-//         // getDBHandler()->Put(
-//         //     rocksdb::WriteOptions(), ecDecToHex(block_number).append("bf"), ofs.str());
-//         // ofs.str("");
-//         // ofs.clear();
-
-//         vcGroup->commitBlock(state_storage[block_number]);
-
-//         // makeEC(block_number, 4);
-//     }
-
-//     std::hash<unsigned int> block_hash;
-//     unsigned int seed = block_hash(block_number);
-//     std::mt19937 rand_num(seed);
-//     VCGroup* vcGroup = new VCGroup(block_number);
-//     for (int i = 0; i < 100; ++i)
-//     {
-//         std::string keys = sha256(boost::lexical_cast<string>(rand_num())).hex();
-//         std::cout <<"Key = "<< keys << std::endl;
-//         double start_time = GetTime();
-//         std::string out = vcGroup->getProof(state_storage[block_number], keys.substr(0, 32));
-//         std::cout <<"Out = "<< out << std::endl;
-//         double end_time = GetTime(); 
-//         std::cout  << end_time- start_time << std::endl;
-//     }
-
-    
-//     // //   VCGroup::verify(out.substr(0,36),vcGroup->)
-//     // getKVAndProof(out, keys, block_number);
-// }
 void Eurasure::mpt_test()
 {
     rocksdb::Options options;
@@ -2289,53 +2077,6 @@ void Eurasure::mpt_test()
     std::cout << end_time - start_time << std::endl;
     mpt_db->Close();
 }
-// void Eurasure::initTestStates(unsigned int block_number)
-// {
-//     std::hash<unsigned int> block_hash;
-//     unsigned int seed = block_hash(block_number);
-//     std::mt19937 generator(seed);
-//     std::uniform_int_distribution<long long> dist(2000, 3000);
-//     size_t state_size = dist(generator);
-//     seed = block_hash(block_number);
-//     std::mt19937 rand_num(seed);
-//     int height = 4;
-//     // mpt_node size
-//     unsigned int node_seed = block_hash(block_number);
-//     std::mt19937 node_generator(node_seed);
-//     std::normal_distribution<> dist_normal{(double)400, 0.0};
-//     size_t node_size = dist_normal(node_generator);
-
-//     std::vector<std::string> leaf;
-//     int size = 0;
-//     for (size_t i = 0; i < 4815; i++)
-//     {
-//         leaf.push_back(sha256(boost::lexical_cast<string>(rand_num())).hex());
-//     }
-//     std::map<std::string, std::string> m;
-//     std::string str = "";
-//     std::string value = "";
-
-//     for (int i = 0; i < 4815; i++)
-//     {
-//         state_storage[block_number].insert(make_pair(leaf[i].substr(0, 32), "1234"));
-//         // size += 36;
-//     }
-
-//     // std::cout << "size = " << size << std::endl;
-//     // tmp_states_size += size;
-//     makeEC(block_number, 4);
-// }
-
-// void Eurasure::getHasherFromDB(bf::hasher& h)
-// {
-//     std::string hashers = "";
-//     getDBHandler()->Get(rocksdb::ReadOptions(), "bf_hasher", &hashers);
-//     std::stringstream ifs(hashers);
-//     boost::archive::binary_iarchive ia(ifs);
-//     ia >> h;
-//     ifs.str("");
-//     ifs.clear();
-// }
 
 void Eurasure::makeEC(int block_number, int thread_number)
 {
@@ -2421,182 +2162,6 @@ void Eurasure::makeEC(int block_number, int thread_number)
     chunks.clear();
 
     position_mapinto_accounts.clear();
-    
-    /*
-        *下面是测试功能时用到的代码段 
-    */
-    /*
-    if(block_number==3 && ec_position_in_sealers==0){
-        // auto tmp = decode_2D(3,_search);
-        auto tmp = decode(3,_search);
-        std::cout<<"Decode strs = "<<tmp<<std::endl;
-        // initTestStates(block_number);
-        VCGroup* vcGroup = new VCGroup(block_number);
-        vcGroup->commitBlock(state_storage[block_number]);
-        vcGroup->getProof(state_storage[block_number], "9DEAB240A21FF5B9BE2D45BB893D577B");
-        // "AD692F687445A9744D58B6CB820FFC28"
-        // "9DEAB240A21FF5B9BE2D45BB893D577B"
-    }
-    if(block_number==3 && ec_position_in_sealers==1){
-        // auto tmp = decode_2D_columns(3,_search);
-        auto tmp = decode(3,_search);
-        std::cout<<"Decode_columns strs = "<<tmp<<std::endl;
-    }
-    */
-   /*
-    if(block_number > 10 && ec_position_in_sealers==1){
-        double start_time = GetTime();
-        auto tmp = decode(block_number,_search); 
-        double end_time = GetTime();
-        std::cout <<"Decode time = "<< end_time - start_time << std::endl;
-        std::cout<<"Decode strs = "<<tmp<<std::endl;
-    }
-    
-    std::cout << "finish EC in Eurasure.h" << std::endl;
-}
-
-void Eurasure::makeMultiEC(int block_number, int thread_number)
-{
-    std::map<int, std::map<int, std::string>> position_mapinto_accounts;
-    // std::cout << "state_storage[block_number].size() = " <<
-    // state_storage[block_number].size()
-    //           << std::endl;
-    // std::cout << "block number = " << block_number << std::endl;
-    int cnt = 0;
-    // qqf search为测试使用的案例
-    std::string _search;
-    auto total_state_storage = state_storage[block_number];
-
-    // IF : state_number + state_storage[block_number].size() > max_state_number
-    if(block_number == 2000){
-        for(int i = block_numbers.size()-1 ; i >=0 ; i--){
-            total_state_storage.insert(state_storage[block_numbers[i]].begin(), state_storage[block_numbers[i]].end());
-        }
-        ofstream outfile("./encodingtime.txt", ios::app);
-        outfile << "Total State Number = "<< total_state_storage.size() << "; ";
-        std::cout << "Total State Number = "<< total_state_storage.size() << std::endl;
-        outfile.close();
-        
-        state_number = 0;
-        block_numbers.clear();
-    }
-    else{
-        block_numbers.push_back(block_number);
-        state_number = state_number + state_storage[block_number].size();
-        return;
-    }
-    
-    ofstream kvfile("./KV.txt", ios::app);
-
-    for (auto it = total_state_storage.begin(); it != total_state_storage.end();
-        ++it)
-    {
-        int pos = ecComputePostion(it->first, getECGroupNum());
-        // std::cout << "key = " << it->first << "; pos = " << pos << std::endl;
-        int sub_pos = ecComputePostion(it->first, getInitVCSize());
-        std::string keys = it->first;
-        
-        if(ec_position_in_sealers==0){
-            std::string _value = it->second;
-            kvfile << keys.substr(0,32) << _value << std::endl;
-            // std::cout << keys.substr(0,32) << _value << std::endl;
-        }
-        
-        // if(keys.substr(0,32) ==
-        // "000d74c9e4c882b18ac739c58473e5ad5871eac3c2278c7e986f233209284e9e")
-        // {
-            // std::cout<< getECGroupNum() <<"StringMap = "<< (it->first).substr(0,32) << "; pos = " << pos << " ; sub_pos = " << sub_pos <<
-            // std::endl;
-            if(pos==41){
-                _search = (it->first).substr(0,32);
-            }
-        // }
-        if (position_mapinto_accounts.count(pos) != 0)
-        {
-            if (position_mapinto_accounts[pos].count(sub_pos) != 0)
-            {
-                position_mapinto_accounts[pos][sub_pos] =
-                    position_mapinto_accounts[pos][sub_pos].append(keys.append(it->second));
-            }
-            else
-            {
-                position_mapinto_accounts[pos].insert(make_pair(sub_pos, keys.append(it->second)));
-            }
-        }
-        else
-        {
-            std::map<int, std::string> ms;
-            std::string keys = it->first;
-            ms.insert(make_pair(sub_pos, keys.append(it->second)));
-            position_mapinto_accounts.insert(make_pair(pos, ms));
-        }
-        // std::cout<<"cnt = "<<cnt<<std::endl;
-        ++cnt;
-    }
-    
-    kvfile.close();
-    // std::cout << "count = " << count << std::endl;
-    std::map<int, std::map<int, std::string>> chunks;
-    int size = position_mapinto_accounts.size();
-    // std::cout<<"The size of Position_mapinto_accounts is "<< size << std::endl;
-    // for (auto it = position_mapinto_accounts.begin(); it !=
-    // position_mapinto_accounts.end();
-    // ++it)
-    // {
-    //     std::cout << "group " << it->first << " size = " << it->second.size()
-    //     << std::endl;
-    // }
-    // std::cout << "start ec" << std::endl;
-    // std::cout << "size = " << size << std::endl;
-    // tbb::parallel_for(tbb::blocked_range<int>(0, size,
-    //                       state_erasure->getNumberOfVCInOneChunk() *
-    //                       state_erasure->getK()),
-    // [&](const tbb::blocked_range<int>& _r) {
-    // std::cout<< "start pos = " << _r.begin() << std::endl;
-    for (int i = 0; i < size; i += getNumberOfVCInOneChunk() * getK() +100000 )
-    {
-        // std::cout<<"i="<<i<<std::endl;
-        saveChunk(position_mapinto_accounts, block_number, i, chunks);
-        // saveChunk_2D(position_mapinto_accounts, block_number, i, chunks);
-    }
-    // });
-    // std::cout << "start make root" << std::endl;
-    // makeMerkleRoot逻辑和状态的EC编码有出入
-    // makeMerkleRoot(block_number, chunks);
-    makeMerkleTree(block_number, chunks);
-    setCompleteCodingEpoch(block_number);
-    chunks.clear();
-
-    position_mapinto_accounts.clear();
-    
-    /*
-        *下面是测试功能时用到的代码段 
-    */
-    /*
-    if(block_number==3 && ec_position_in_sealers==0){
-        // auto tmp = decode_2D(3,_search);
-        auto tmp = decode(3,_search);
-        std::cout<<"Decode strs = "<<tmp<<std::endl;
-        // initTestStates(block_number);
-        VCGroup* vcGroup = new VCGroup(block_number);
-        vcGroup->commitBlock(state_storage[block_number]);
-        vcGroup->getProof(state_storage[block_number], "9DEAB240A21FF5B9BE2D45BB893D577B");
-        // "AD692F687445A9744D58B6CB820FFC28"
-        // "9DEAB240A21FF5B9BE2D45BB893D577B"
-    }
-    if(block_number==3 && ec_position_in_sealers==1){
-        // auto tmp = decode_2D_columns(3,_search);
-        auto tmp = decode(3,_search);
-        std::cout<<"Decode_columns strs = "<<tmp<<std::endl;
-    }
-    */
-    // if(block_number > 10){
-    //     double start_time = GetTime();
-    //     auto tmp = decode(block_number,_search); 
-    //     double end_time = GetTime();
-    //     std::cout <<"Decode time = "<< end_time - start_time << std::endl;
-    //     // std::cout<<"Decode strs = "<<tmp<<std::endl;
-    // }
     
     std::cout << "finish Multi-EC " << std::endl;
 }
@@ -2710,45 +2275,6 @@ void Eurasure::makeECFromKV(int block_number, int _kv_number)
 
     position_mapinto_accounts.clear();
     
-    /*
-        *下面是测试功能时用到的代码段 
-    */
-    /*
-    if(block_number==3 && ec_position_in_sealers==0){
-        // auto tmp = decode_2D(3,_search);
-        auto tmp = decode(3,_search);
-        std::cout<<"Decode strs = "<<tmp<<std::endl;
-        // initTestStates(block_number);
-        VCGroup* vcGroup = new VCGroup(block_number);
-        vcGroup->commitBlock(state_storage[block_number]);
-        vcGroup->getProof(state_storage[block_number], "9DEAB240A21FF5B9BE2D45BB893D577B");
-        // "AD692F687445A9744D58B6CB820FFC28"
-        // "9DEAB240A21FF5B9BE2D45BB893D577B"
-    }
-    if(block_number==3 && ec_position_in_sealers==1){
-        // auto tmp = decode_2D_columns(3,_search);
-        auto tmp = decode(3,_search);
-        std::cout<<"Decode_columns strs = "<<tmp<<std::endl;
-    }
-    */
-    // if(block_number > 10){
-    //     double start_time = GetTime();
-    //     auto tmp = decode(block_number,_search); 
-    //     double end_time = GetTime();
-    //     std::cout <<"Decode time = "<< end_time - start_time << std::endl;
-    //     // std::cout<<"Decode strs = "<<tmp<<std::endl;
-    // }
-    
-    // if(ec_position_in_sealers==0){
-    //     auto start_decoding = GetTime();
-    //     decode(block_number,_search);
-    //     auto end_decoding = GetTime();
-    //     ofstream ofile("./encodingtime.txt",ios::app);
-    //     ofile << "Decoding state number = " << kv_number
-    //         <<" ; Cost time = " << end_decoding - start_decoding << "s" << std::endl;
-    //     ofile.close();
-    // }
-    
 
     std::cout << "finish EC from KV.txt " << std::endl;
 }
@@ -2769,16 +2295,16 @@ std::unordered_map<h256, std::string> Eurasure::makeECFromMPT(int block_number, 
             // ancestors_leaves 多半是有重复的（奇数情况） 所以当遍历到重复的祖先 则其已经有校验块[p->不为空]
             if(bmt.ancestors_leaves.count(currentNode->_hash) && currentNode->p.empty()){
                 auto leaves = bmt.ancestors_leaves[currentNode->_hash];
-                auto trans_leaves = std::vector<std::pair<dev::h256, std::string>>();
+                auto trans_leaves = vector<std::pair<dev::h256, std::string>>();
                 auto cnt = 0;
                 for(const auto& leaf: leaves){
-                    // leaf 为 状态存储时候的 key(h256), 此时根据 key 在 state_cache 中寻找对应的 value(string)
+                    // leaf 为 状态存储时候的 key(也就是MekleRoot), 此时根据 key 在 state_cache(build时暂存的chunk内容——以string形式) 中寻找对应的 value(string)
                     if(std::find(trans_leaves.begin(), trans_leaves.end(), make_pair(leaf, bmt.state_cache[leaf])) == trans_leaves.end()){
-                        trans_leaves.push_back(std::make_pair(leaf, bmt.state_cache[leaf]));
+                        trans_leaves.push_back(make_pair(leaf, bmt.state_cache[leaf]));
                         cnt++;
                     }
                 }
-                ec_k = cnt; // 原为数据块的个数，现为状态数量的个数
+                ec_k = cnt; // 原为数据块的个数
                 ec_m = level; // 原为校验块的数量，现为每一层校验块的数量
                 auto encoded_data = saveChunkFromMPT(trans_leaves, bmt, currentNode);
                 totalEncodedData.insert(encoded_data.begin(), encoded_data.end());
@@ -2806,10 +2332,10 @@ std::unordered_map<h256, std::string> Eurasure::makeECFromMPT(int block_number, 
 }
 
 // 将 leaves 中的叶子节点的值进行编码， 并且将校验块信息更新到 bmt 中
-std::unordered_map<h256, std::string> Eurasure::saveChunkFromMPT(std::vector<std::pair<dev::h256, std::string>>& leaves, BMT& bmt, std::shared_ptr<dev::Node>& node)
+unordered_map<h256, string> Eurasure::saveChunkFromMPT(vector<pair<h256, string>>& leaves, BMT& bmt, shared_ptr<dev::Node>& node)
 {
     // 创造一些输出日志的参数 包括时间之类的参数
-    auto t1 = std::chrono::steady_clock::now();
+    auto t1 = chrono::steady_clock::now();
 
 
     // 第一个参数是指向ec后的数组的指针，第二个参数是每个数组的长度（其中最大的变量）
@@ -2829,9 +2355,27 @@ std::unordered_map<h256, std::string> Eurasure::saveChunkFromMPT(std::vector<std
         if (count >= ec_k){
             // 将校验块的 hash 插入至对应的祖先节点处
             // cout<<"将校验块的 hash 插入至对应的祖先节点" << node->_hash << "处 " << value.size() << endl;
-            node->p.push_back(dev::sha3(value));
-            encoded_data[dev::sha3(value)] = value;
+            _MerkleTree mTree(dev::splitStr(value, 100));
+            auto hash = mTree.root->hash;
+            node->p.push_back(hash);
+            encoded_data[hash] = value;
+            // writing parity chunk.
+            if(ec_db != NULL){
+                auto s = ec_db->Put(rocksdb::WriteOptions(), 
+                    rocksdb::Slice(reinterpret_cast<const char*>(hash.data()), dev::h256::size), 
+                    rocksdb::Slice(value));
+                if(!s.ok()){
+                    cout << "Write failed" << endl;
+                }
+                else{
+                    cout << "Write P success " << dev::toString(hash) << endl;
+                }
+            }
+            else{
+                cout << "db have not INIT!" << endl;
+            }
         }
+
     }
     cout << "Parity chunks: " << ec_m << endl;
 
@@ -2962,7 +2506,7 @@ std::string Eurasure::decodeFromMPT(std::pair<uint8_t**, int64_t> test_data)
 
 std::string Eurasure::decodeFromMPT(std::vector<std::string> raw_data, int p_number, int lost_node)
 {
-    
+
     auto _num = raw_data.size();
     // double start_time = GetTime();
     erasure_bool* present = new erasure_bool[_num];
@@ -2973,7 +2517,9 @@ std::string Eurasure::decodeFromMPT(std::vector<std::string> raw_data, int p_num
     std::vector<int> str_lengh;
     for(const auto& str: raw_data){
         str_lengh.push_back(str.size());
+        cout << str.size() << " ";
     }
+    cout << endl;
 
     // std::cout<<"decode lengh :"<< lengh << ", decode number :" << _num <<std::endl;
 
@@ -3012,13 +2558,13 @@ std::string Eurasure::decodeFromMPT(std::vector<std::string> raw_data, int p_num
                 }
             }
             string value((const char*)ptrs[count], str_lengh[count]);
-            // std::cout << "Decode::Data_Chunks[" << count << "] = " << str_lengh[count] << ":" << "RLP(value)" << std::endl; 
+            std::cout << "Decode::Data_Chunks[" << count << "] = " << str_lengh[count] << ":" << "RLP(value)" << std::endl; 
             if(count == lost_node)
                 return value;
         }
         else{
             string value((const char*)ptrs[count], str_lengh[count]);
-            // std::cout << "Decode::Coded_Chunks[" << count << "] = " << "value" << std::endl;
+            std::cout << "Decode::Coded_Chunks[" << count << "] = " << "value" << std::endl;
         }   
     }
 
@@ -3131,6 +2677,7 @@ bool Eurasure::initVC()
     // getDBHandler()->Put(rocksdb::WriteOptions(), "bf_hasher", ofs.str());
     // ofs.str("");
     // ofs.clear();
-    setVCDB(vc_db);
+    setVCDB(*ec_db);
     std::cout << "init vc finished" << std::endl;
+    return true;
 }

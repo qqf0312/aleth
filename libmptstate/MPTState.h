@@ -57,7 +57,6 @@ private:
     dev::eth::State m_state;
     std::unordered_map<int,dev::StringMap> state_storage;
     int block_number = 1;
-    rocksdb::DB* ec_db;                   // DB句柄
     rocksdb::DB* vc_db;                   // DB句柄
     const int subcommit_num = 16;
     const int init_vc_size = 5000;
@@ -67,8 +66,10 @@ private:
     // const double false_positive_rate = 0.01;
     // bf::hasher hashers;
     bool flag = false;
+
 public:
-    
+    int block_height = -1;  // finish block height
+    unique_ptr<rocksdb::DB> ec_db;        // DB句柄
     int64_t t_state_size = 0;
     int64_t t_extraInfo_size = 0;
     int64_t t_encoded_size = 0;
@@ -156,9 +157,6 @@ public:
         WithExisting _we = WithExisting::Trust);
 
     bool initVC();
-    // std::shared_ptr<dev::p2p::Service> initP2PService(boost::property_tree::ptree& pt);
-    // void getNodeList(dev::h512s& sealers, std::string config_path);
-    // void getHasherFromDB(bf::hasher& h);
 
     void makeEC(int block_number, int thread_number);
 
@@ -235,6 +233,7 @@ public:
 
     // std::shared_ptr<ec::Eurasure> getErasure(){return state_erasure;}
     ec::Eurasure* getErasure(){return state_erasure;}
+    
 
 };
 

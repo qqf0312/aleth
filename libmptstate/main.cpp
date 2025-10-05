@@ -4,6 +4,7 @@
 
 #include "MPTState.h"
 #include <libdevcore/SHA3.h>
+#include "Mediator.h"
 // #include <tbb/tbb.h>
 
 using namespace std;
@@ -58,17 +59,18 @@ int main(int argc, char** argv){
     cout << "Hello mptstate" << endl;
 
     // init 
-    int nodes_number = 8;
+    int nodes_number = 4;
     int fault_tolerance = 2;
     int encoding_level = 2;
 
     int _block_num = 1;
-    int _account_num = 2000;
+    int _account_num = 20;
     double skew = 0.0;
 
     int account_size = 1000000;
     dev::mptstate::MPTState mptState(u256(0), dev::mptstate::MPTState::openDB("./", sha3("0x1234")), BaseState::Empty);
     mptState.state_erasure = new ec::Eurasure();
+    mptState.initVC();
     {
         MyTimer timer("WRITE");
 
@@ -162,6 +164,39 @@ int main(int argc, char** argv){
                 cout << output << endl;
             }
             cout<<"ROOT HASH:"<< mptState.rootHash(true)<<std::endl;
+        }
+        Mediator mediator(mptState, mptState.getState().db(), *mptState.ec_db);
+        mediator.rebuildChunk(1,1);
+        sleep(1);
+        if(true){
+            auto t4 = std::chrono::steady_clock::now();
+            int _cnt = 0;
+            auto max_time = std::chrono::duration_cast<std::chrono::microseconds>(t4 - t4).count() / 1000.0;;
+            auto min_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::microseconds(1000)).count() / 1000.0;;
+
+            for(auto &id: processed_data){
+            
+                // mptState.versionManager.at(sha3(Address(u160(289383))), mptState.rootHash());
+                auto t4_1 = std::chrono::steady_clock::now();
+                // mptState.versionManager.at(sha3(Address(id)), mptState.rootHash());
+                mediator.at(sha3(Address(id)), mptState.rootHash());
+                _cnt++;
+                auto t4_2 = std::chrono::steady_clock::now();
+                auto single_read_time = std::chrono::duration_cast<std::chrono::microseconds>(t4_2 - t4_1).count() / 1000.0;
+                max_time = max(max_time, single_read_time);
+                min_time = min(min_time, single_read_time);
+                if(_cnt % 1000 == 0) 
+                    cout<< "Reading......" << _cnt << endl;
+                if(_cnt > 1) break;
+                cout << " \x1b[33m[Next account]\x1b[0m" << endl;
+            }
+
+            auto t5 = std::chrono::steady_clock::now();
+            // auto read_time = std::chrono::duration_cast<std::chrono::microseconds>(t5 - t4).count() / 1000.0;
+            // cout << "Read Time (AVG) for " << _cnt << " states in one Block:" << read_time/_cnt <<  "ms." 
+            //     << " Max: "<< max_time << "ms." 
+            //     << " Min: "<< min_time << "ms." 
+            //     << " AVG remote read per state: " << (double)mptState.versionManager.read_count / _cnt << endl;
         }
     }
 

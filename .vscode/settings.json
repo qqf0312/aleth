@@ -67,6 +67,7 @@
         "string_view": "cpp",
         "typeindex": "cpp",
         "variant": "cpp",
-        "regex": "cpp"
+        "regex": "cpp",
+        "numbers": "cpp"
     }
 }

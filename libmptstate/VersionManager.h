@@ -1,6 +1,7 @@
 #pragma once
 
 #include <libdevcore/TrieDB.h>
+#include <libdevcore/OverlayDB.h>
 #include <iostream>
 #include <iomanip>
 #include "Vtools.h"
@@ -31,7 +32,7 @@ using namespace dev;
 //         cout << bytes / GB << "GB";
 //     }
 // }
-
+static constexpr size_t kChildLen = 11; // Metadata length + ver length
 struct NodeMetadata {
     uint32_t m_offset; // value 在 chunk 中的偏移量
     uint32_t m_lengh; // 前三个字节表示 value 长度，后一个字节表示 metadata长度
@@ -81,7 +82,7 @@ public:
     // 初始化
     vector<unordered_set<h256>> parts; // 每组节点集合
     unordered_map<h256, uint16_t> Mapparts; // 每组节点集合( unorder_map 形态)
-    vector<int> partSize;           // 每组当前大小
+    vector<uint> partSize;           // 每组当前大小
     unordered_map<h256, size_t> nodeSize;    // 每个元素的大小
     unordered_map<h256, vector<h256>> tree; // 模拟树结构：节点哈希 -> 子节点列表
     uint totalNodes = 0;       // 节点总数
@@ -265,7 +266,7 @@ public:
         cout << "Switch to DFS dep = "<< dep << endl;
         // 切换到 DFS 阶段
         useDFS = true;
-        while(!bfsQueue.empty()){
+        while(!bfsQueue.empty() && useDFS){
             h256 nodeHash = bfsQueue.front();
             bfsQueue.pop();
             dfs(nodeHash, dep);
@@ -285,7 +286,7 @@ public:
     void partitionMPTWithBaseline(h256 rootHash) {
 
         // 混合 BFS 和 DFS 划分
-        bool useDFS = false; // 是否切换到深度优先
+        // bool useDFS = false; // 是否切换到深度优先
 
         // BFS 阶段：按层划分
         queue<h256> bfsQueue;
@@ -711,12 +712,29 @@ private:
     unordered_map<h256, h256> fatherMap;
     queue<pair<h256, uint16_t>> ready_node;
     unordered_map<h256, uint16_t> partitions;
+    int block_number;
+    // queue<h256> m_order; // the nodes order in a chunk 
+    rocksdb::DB *_db = NULL;
+    OverlayDB *overlay_db = NULL;
     int TotalMetaSize = 0;
 public:
 
-    void setDataSet(unordered_map<h256, pair<std::string, NodeMetadata>>& dataSet){
-        m_dataSet = dataSet;
+    void setDB(rocksdb::DB& db) { _db = &db; }
+    void setStateDB(OverlayDB &db){ overlay_db = &db; }
+
+    void writeDB(h256& hash, string str){
+        if(_db != NULL){
+            auto s = _db->Put(rocksdb::WriteOptions(), 
+            rocksdb::Slice(reinterpret_cast<const char*>(hash.data()), dev::h256::size), 
+            rocksdb::Slice(str));
+        if(!s.ok()){
+            cout << "Write failed" << endl;
+        }
+        else{
+            // cout << "Write already "<< str <<endl;
+        }
     }
+}
 
     string serializeMetadata(const NodeMetadata& metadata) {
         ostringstream oss;
@@ -769,7 +787,7 @@ public:
         return s; // 返回序列化后的字符串
     }
 
-    pair<NodeMetadata,uint16_t> deserializeMetadata(const string& data) {
+    static pair<NodeMetadata,uint16_t> deserializeMetadata(const string& data) {
         NodeMetadata metadata;
         uint16_t ver;
         istringstream iss(data);
@@ -799,6 +817,61 @@ public:
         return {metadata, ver}; // 返回反序列化后的结构
     }
     
+    void recordChunkOrder(queue<h256> q, size_t idx){
+        // string str = pack_hashes_8B2B(q);
+        // for(auto tmp=q; !tmp.empty(); tmp.pop()){
+        //     cout << tmp.front() << endl;
+        // }
+
+        cout << "[recordChunkOrder]" << endl;
+        string str = serialize_h256_queue_raw(q);
+        string k = "O|";
+        k.append(dev::toString(block_number));
+        k.push_back('|');
+        k.append(dev::toString(idx));
+        if(_db != NULL){
+            auto s = _db->Put(rocksdb::WriteOptions(), 
+            rocksdb::Slice(k), 
+            rocksdb::Slice(str));
+            if(!s.ok()){
+                cout << "Write failed" << endl;
+            }
+            else{
+                cout << "Write chunk order successful!" << endl;
+            }
+        }
+        // local read and unpacked test;
+        string test_rlt;
+        if(_db != NULL){
+            _db->Get(rocksdb::ReadOptions(), k, &test_rlt);
+            if(test_rlt.empty()){
+                cout << "Read failed" << endl;
+            }
+            else{
+                cout << "Read chunk order successful!" << endl;
+            }
+        }
+        auto test_vec_h256 = deserialize_h256_list_raw(test_rlt);
+        // auto prefixes = unpack_prefix_tags(test_rlt);
+        // vector<pair<string, string>> vec;
+        // for(size_t i; i<prefixes.size(); i++){
+        //     auto& prefix = prefixes[i];
+        //     vec = scan_by_u64prefix_check_u16tag_simple(overlay_db, prefix.prefix8, prefix.tag16);
+        // }
+        for(size_t i = 0; i < test_vec_h256.size(); ++i){
+            if(test_vec_h256[i] == q.front()){
+                // cout << "fetch:" << test_vec_h256[i] << endl;
+                // cout << "origin:" <<q.front() << endl;
+                q.pop();
+            }
+            else{
+                cout << "Read a wrong state!" <<endl;
+                return ;
+            }
+        }
+        cout << "Good! every hash has been read successful!" << endl;
+    }
+
     vector<string> handleDataSet(unordered_map<h256, uint16_t> partitions, int cnt){
         
         // 所有元素和其分组压入 partitions 
@@ -811,8 +884,9 @@ public:
         //     }
         //     ++cnt;
         // }
-        // 初始化每个分组对应的 chunk 
+        // 初始化每个分组对应的 chunk & order
         vector<string> parts(cnt);
+        vector<queue<h256>> order(cnt);
         // 完成情况 
         // unordered_set<h256> done_set; 
         while(!partitions.empty()){
@@ -836,6 +910,7 @@ public:
                 // 判断是否是叶子节点
                 if(rlp.itemCount() == 2 && isLeaf(rlp)){
                     auto& data = parts[group];
+                    auto& que = order[group]; 
                     // 更新该节点的 metadata
                     meta.m_offset = data.size();
                     meta.m_lengh = (value.size() & 0xFFFFFF) | (0 << 24);
@@ -843,6 +918,7 @@ public:
                     // cout << "suo shu jie dian :" << meta.getNodeNum() << endl;
                     // 因为是叶子节点，他没有子节点，无需在value后面添加
                     data = data + value;
+                    que.push(hash);
                     // 成功插入一个 hash
                     // cout << "succees insert leaf:" << hash;
                     // meta.printNodeMetadata();
@@ -855,6 +931,7 @@ public:
                     // 检测是否有还未被初始化的 Metadata
                     bool can_build = true;
                     vector<pair<NodeMetadata, int>> childrenMeta;
+                    vector<size_t> childidx;
                     if(rlp.itemCount() == 2){
                         auto childHash = rlp[1].toHash<h256>();
                         // cout << "We are detect(cnt=2) " << childHash << endl;
@@ -862,6 +939,7 @@ public:
                         if (m_dataSet_init[childHash] != true) {
                             // cout << "Not in " << childHash << endl;
                             childrenMeta.clear();
+                            childidx.clear();
                             can_build = false;
                             // break;
                         }
@@ -869,6 +947,7 @@ public:
                             // 将对应子节点的 Nodemeta 和 nodeVersion 塞进一个 tmp 中
                             auto tmp = make_pair(m_dataSet[childHash].second, m_nodeVersions[childHash]);
                             childrenMeta.push_back(tmp);
+                            // childidx.push_back(childHash); // extension node no need 
                         }
                     }
                     else{
@@ -881,6 +960,7 @@ public:
                             if (m_dataSet_init[childHash] != true) {
                                 // cout << "Not in   " << childHash << endl;
                                 childrenMeta.clear();
+                                childidx.clear();
                                 can_build = false;
                                 break;
                             }
@@ -888,16 +968,19 @@ public:
                                 // 将对应子节点的 Nodemeta 和 nodeVersion 塞进一个 tmp 中
                                 auto tmp = make_pair(m_dataSet[childHash].second, m_nodeVersions[childHash]);
                                 childrenMeta.push_back(tmp);
+                                childidx.push_back(i);
                             }
                         }
                     }
                     // 把数据插入 chunk 当中
                     if(can_build){
                         auto& data = parts[group];
+                        auto& que = order[group]; 
+                        que.push(hash);
+
                         meta.m_offset = data.size();
 
                         data.append(value);
-
 
                         // 所有的 MetaData 的合计大小
                         uint8_t meta_size = 0;
@@ -913,6 +996,7 @@ public:
                             data = data + serializedData;
                             // 设置节点 hash 何其对应的 childrenNode 的 Metadata
                             str = str + serializedData;
+                            cout<< "l = " << str.length();
                             // nodemeta.printNodeMetadata(ver); 
                             // cout << ver << endl;
                             // cout << "deserializedMetaData" << endl;
@@ -927,6 +1011,13 @@ public:
                         // 成功插入一个 hash
                         // cout << "succees insert No-leaf:" << hash;
                         m_dataWithchildsNodeMetadata[hash] = str;
+                        string prefix = "{";
+                        for(auto& idx: childidx) {
+                            char c = (idx<10) ? char('0'+idx) : char('a'+(idx-10)) ;
+                            prefix.push_back(c);
+                        }
+                        prefix.push_back('}');
+                        writeDB(hash,prefix + str);
                         // meta.printNodeMetadata();
                         
 
@@ -956,6 +1047,7 @@ public:
         for(size_t i=0; i < parts.size(); i++){
             auto ts = printMemorySize(parts[i].size());
             auto output = "Chunk " + toString(i) + " " + ts;
+            recordChunkOrder(order[i], i);
             writeToLog(output, "ouput_log.txt");
             cout << endl;
         }
@@ -1201,26 +1293,6 @@ public:
         }
     }
 
-    // string processDataSet(unordered_set<h256> partition_set){
-    //     string data;
-    //     for(auto& hash : partition_set){
-    //         auto value = m_dataSet[hash].first;
-    //         auto& meta = m_dataSet[hash].second;
-    //         // cout << "data  fist size " << data.size() << endl;
-    //         meta.m_offset = data.size();
-    //         meta.m_lengh = (value.size() & 0xFFFFFF) | (meta.Size() << 24);
-    //         auto metaStr = serializeMetadata(meta);
-    //         // cout << "Handledataset hash:" << hash 
-    //         //     << " Offset" <<  meta.m_offset
-    //         //     << " Value" <<  value.size()
-    //         //     << " MetaStr" <<  metaStr.size() <<endl;
-    //         data.append(value);
-    //         data.append(metaStr); 
-    //         // cout << "data size " << data.size() << endl;
-    //     }
-    //     return data;
-    // }
-
     void printDataSet(){
         cout << "= = = Data Set = = =" << endl;
         for(auto& ele : m_dataSet){
@@ -1267,5 +1339,5 @@ public:
     //     m_dataSet(dataSet), m_dataSet_init(dataSet_init) {}
 
     ChunkBuilder(VersionManager& vm) : m_dataSet(vm.dataSet), m_dataSet_init(vm.dataSet_init), 
-        m_nodeVersions(vm.m_nodeVersions), m_dataWithchildsNodeMetadata(vm.dataWithchildsNodeMetadata) {}
+        m_nodeVersions(vm.m_nodeVersions), m_dataWithchildsNodeMetadata(vm.dataWithchildsNodeMetadata), block_number(vm.m_currentVersion){}
 };

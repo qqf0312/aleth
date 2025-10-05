@@ -46,6 +46,8 @@
 // write bloom filter bitvector format : <block_number+"bf",bitvector>
 // write bloom filter hasher format : <"bf_hasher", hasher>
 
+ec::Eurasure* dev::mptstate::MPTState::state_erasure = NULL;
+
 // 辅助函数：将 v1 划分为多个组
 std::vector<std::vector<dev::h256>> splitGroups(const std::vector<dev::h256>& v1) {
     std::vector<std::vector<dev::h256>> groups;
@@ -111,8 +113,6 @@ std::vector<std::vector<dev::h256>> partitionElements( const std::vector<dev::h2
     }
     return result;
 }
-
-ec::Eurasure* dev::mptstate::MPTState::state_erasure = NULL;
 
 static std::string DecIntToHexStr(dev::u256 const& num)
 {
@@ -317,6 +317,8 @@ std::unordered_map<h256, std::string> MPTState::makeECFromMPT(int block_number, 
     auto t3 = std::chrono::steady_clock::now();
 
     ChunkBuilder cb(versionManager);
+    cb.setDB(*ec_db); // binding the DB
+    cb.setStateDB(getState().db()); // binding the State DB
     // cb.setDataSet(versionManager.dataSet);
     
     // cb.initPartitions(sp.getPartitionMapResult());
@@ -348,9 +350,15 @@ std::unordered_map<h256, std::string> MPTState::makeECFromMPT(int block_number, 
     // 2. 编码阶段
     auto totalEncodedData = state_erasure->makeECFromMPT(block_number, bmt, fault_tolerance, encoding_level);
     BMT_map.emplace(block_number, bmt);
+    vector<h256> VCgroup;
+    string encoding_group; // 所有编码组的排列 e.g. [016][012345][237]
+    auto edges = bmt.buildIndexFromLeaves(VCgroup, encoding_group);
+    persist_edges(*ec_db, edges, VCgroup, block_number);
+    persist_encoding_group(*ec_db, encoding_group, block_number);
     
     cb.StorageForChunks(chunksRlt, totalEncodedData, t_state_size, t_extraInfo_size, t_encoded_size); // 计算存储开销
     
+    block_height = block_number;
     /*
     // 3. 状态划分 
     std::vector<h256> data_set;
@@ -384,7 +392,7 @@ OverlayDB MPTState::openDB(
 {
     // initEC();
 
-    std::cout << "init success" << std::endl;
+    std::cout << "init DB success" << std::endl;
     return State::openDB(_path, _genesisHash, _we);
 }
 
@@ -556,12 +564,13 @@ void MPTState::commit()
 //     ifs.str("");
 //     ifs.clear();
 // }
+
 bool MPTState::initVC()
 {
     rocksdb::Options options;
     options.create_if_missing = true;
-    rocksdb::DB* vc_db;
-    rocksdb::Status status = rocksdb::DB::Open(options, "./vcstorage/", &vc_db);
+    rocksdb::DB* raw;
+    rocksdb::Status status = rocksdb::DB::Open(options, "./vcstorage/", &raw);
     assert(status.ok());
     // VCGroup::initTemplate(vc_db, subcommit_num, init_vc_size);
     // bf::basic_bloom_filter bloom_filter(false_positive_rate, max_state_size);
@@ -572,8 +581,10 @@ bool MPTState::initVC()
     // state_erasure->getDBHandler()->Put(rocksdb::WriteOptions(), "bf_hasher", ofs.str());
     // ofs.str("");
     // ofs.clear();
-    state_erasure->setVCDB(vc_db);
-    // std::cout << "init ec finished" << std::endl;
+    ec_db.reset(raw);
+    state_erasure->setVCDB(*ec_db);
+    std::cout << "init ec in MPTstate finished" << std::endl;
+    return true;
 }
 
 void MPTState::dbCommit(h256 const&, int64_t)

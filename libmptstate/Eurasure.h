@@ -80,9 +80,6 @@ class Eurasure : public std::enable_shared_from_this<Eurasure> {
     std::string GetChunkDataKey(unsigned int coding_epoch, unsigned group_id,
                                 unsigned chunk_pos);
     //写chunk 模块
-    // void saveChunk(std::map<int, std::string> const& states, int
-    // block_number, int groupid,
-    //     std::map<int, std::map<int, std::string>>& cs);
     void saveChunk(std::map<int, std::map<int, std::string>> &states,
                    int block_number, int groupid,
                    std::map<int, std::map<int, std::string>> &cs);
@@ -206,7 +203,7 @@ class Eurasure : public std::enable_shared_from_this<Eurasure> {
     int getNumberOfVCInOneChunk() { return number_of_vc_in_one_chunk; }
     // ec::EurasureP2P *getP2PHandle() { return ec_eurasure_p2p; }
     // blockchainManager getBlockchain() { return ec_blockchain; }
-    void setVCDB(rocksdb::DB *_db) { vc_db = _db; }
+    void setVCDB(rocksdb::DB& _db) { ec_db = &_db; }
     int getRandCount() { return randcount; }
     bool accRandCount() {
         ++randcount;

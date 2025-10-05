@@ -66,29 +66,6 @@ namespace dev{
 
             MerkleNode(h256 hash_val) : hash(hash_val), left(nullptr), right(nullptr) {}
 
-            // MerkleNode(const MerkleNode& other): hash(other.hash), left(nullptr), right(nullptr){
-            //     if(other.left){
-            //         left = new MerkleNode(*other.left);
-            //     }
-            //     if(other.right){
-            //         right = new MerkleNode(*other.right);
-            //     }
-            // }
-
-            // MerkleNode& operator=(const MerkleNode& other){
-            //     if(this == &other){
-            //         return *this;
-            //     }
-
-            //     delete left;
-            //     delete right;
-
-            //     hash = other.hash;
-            //     left = other.left ? new MerkleNode(*other.left) : nullptr;
-            //     right = other.right ? new MerkleNode(*other.right) : nullptr;
-
-            //     return *this;
-            // }
         };
 
         MerkleNode* generateMerkleTree(const vector<string> data){
@@ -146,43 +123,18 @@ namespace dev{
         _MerkleTree(const vector<string>& data) {
             root = generateMerkleTree(data);
         }
-
-        // // 深拷贝构造函数
-        // _MerkleTree(const _MerkleTree& other) {
-        //     root = copyMerkleTree(other.root);
-        // }
-
-        // // 深拷贝赋值运算符
-        // _MerkleTree& operator=(const _MerkleTree& other) {
-        //     if (this != &other) {
-        //         clearMerkleTree(root);
-        //         root = copyMerkleTree(other.root);
-        //     }
-        //     return *this;
-        // }
-
-        // // 深拷贝函数：递归复制Merkle树
-        // MerkleNode* copyMerkleTree(MerkleNode* node) {
-        //     if (!node) return nullptr;
-        //     MerkleNode* newNode = new MerkleNode(node->hash);
-        //     newNode->left = copyMerkleTree(node->left);
-        //     newNode->right = copyMerkleTree(node->right);
-        //     return newNode;
-        // }
-
-        // // 清理树的内存
-        // void clearMerkleTree(MerkleNode* node) {
-        //     if (!node) return;
-        //     clearMerkleTree(node->left);
-        //     clearMerkleTree(node->right);
-        //     delete node;
-        // }
         
         _MerkleTree(){}
     };
         
-
-
+    static vector<std::string> splitStr(const string& str, size_t n){
+        vector<string> rlt;
+        for(size_t i = 0; i < str.size(); i += n) {
+            rlt.emplace_back(str.begin() + i, str.begin() + min(i+n, str.size()));
+        }
+        return rlt;
+    }
+    
     class BMT{
     public:
         std::shared_ptr<Node> bmt_root; // 根哈希
@@ -245,50 +197,6 @@ namespace dev{
             std::cout<<"BMTRoot make from chunks = "<< bmt_root -> _hash <<std::endl;
         }
         BMT(){}   
-
-        // // 拷贝构造函数
-        // BMT(const BMT& other){
-        //     // sleep(1);
-        //     if(other.bmt_root){
-        //         bmt_root = deepCopyNode(other.bmt_root);
-        //     }
-        //     // cout<<"深度拷贝函数" << endl;
-        //     state_cache = other.state_cache;
-        //     ancestors_leaves = other.ancestors_leaves;
-        //     MerkleTrees = other.MerkleTrees;
-        // }
-
-        // // 拷贝赋值运算=
-        // BMT& operator=(const BMT& other){
-        //     // cout<<"拷贝赋值运算" << endl;
-        //     // sleep(1);
-        //     if(this != &other){
-        //         bmt_root = other.bmt_root ? deepCopyNode(other.bmt_root) : nullptr;
-        //         state_cache = other.state_cache;
-        //         ancestors_leaves = other.ancestors_leaves;
-        //         MerkleTrees = other.MerkleTrees;
-        //     }
-        //     return *this;
-        // }
-
-        // // 辅助函数 用于递归拷贝Node
-        // shared_ptr<Node> deepCopyNode(const shared_ptr<Node>& node){
-        //     if(!node){
-        //         return nullptr;
-        //     }
-        //     auto newNode = make_shared<Node>(node->_hash, node->_index);
-        //     newNode->left_child = deepCopyNode(node->left_child);
-        //     newNode->right_child = deepCopyNode(node->right_child);
-        //     return newNode;
-        // }
-
-        vector<std::string> splitStr(const string& str, size_t n){
-            vector<string> rlt;
-            for(size_t i = 0; i < str.size(); i += n) {
-                rlt.emplace_back(str.begin() + i, str.begin() + min(i+n, str.size()));
-            }
-            return rlt;
-        }
 
         std::unordered_map<h256, uint> assignIndices(const std::unordered_map<h256, std::string>& inputMap){
             std::unordered_map<h256, uint> indexedMap;
@@ -535,5 +443,171 @@ namespace dev{
             }
             return rlt;
         }
+
+        using Edge = std::pair<h256,h256>;   // src -> dst
+
+        // 原有：简单 DFS，不去重、不去环 + 计数/编号/打印
+        void buildEdges(const std::shared_ptr<Node>& cur,
+                        const std::shared_ptr<Node>& parent,
+                        const std::shared_ptr<Node>& nearestP,
+                        vector<Edge>& out,
+                        vector<h256>& datachunk, // 数据块顺序
+                        vector<h256>& paritychunk,  // 校验块顺序
+                        uint64_t& leaf_no,   // ★ 叶子计数器
+                        uint64_t& p_no)      // ★ p 元素计数器
+        {
+            if (!cur) return;
+
+            const bool isLeaf = (!cur->left_child && !cur->right_child);
+            const bool curP   = !cur->p.empty();
+
+            // --- 编号/打印：叶子 ---
+            if (isLeaf) {
+                std::cout << "[LEAF #" << leaf_no << "] hash=" << cur->_hash << "\n";
+                datachunk.emplace_back(cur->_hash);
+                ++leaf_no;
+            }
+
+            // 原规则1：叶子 → 最近 p 非空祖先
+            if (isLeaf && nearestP) {
+                out.emplace_back(cur->_hash, nearestP->_hash);
+            }
+
+            // 原规则2：非叶且自身 p 非空 → 直接父亲
+            if (!isLeaf && curP && parent) {
+                out.emplace_back(cur->_hash, parent->_hash);
+            }
+
+            // 原规则3：节点 → p 中每个成员
+            // 同时对每个 p 元素编号/打印（按遍历顺序）
+            for (const auto& ph : cur->p) {
+                std::cout << "  [P    #" << p_no << "] ph=" << ph << "\n";
+                paritychunk.emplace_back(ph);
+                ++p_no;
+
+                out.emplace_back(ph, cur->_hash);
+            }
+
+            // 更新“最近 p 非空祖先”
+            auto nextNearest = curP ? cur : nearestP;
+
+            buildEdges(cur->left_child,  cur, nextNearest, out, datachunk, paritychunk, leaf_no, p_no);
+            buildEdges(cur->right_child, cur, nextNearest, out, datachunk, paritychunk, leaf_no, p_no);
+        }
+
+        // 包装：从根启动，并返回 edges；顺便完成编号打印
+        std::vector<Edge> buildIndexFromLeaves(vector<h256>& VCgroup, string& encoding_group)
+        {
+            std::vector<Edge> edges;
+            vector<h256> datachunk;
+            vector<h256> paritychunk;
+            uint64_t leaf_no = 0;
+            uint64_t p_no    = 0;
+
+            buildEdges(bmt_root, /*parent*/nullptr, /*nearestP*/nullptr,
+                    edges, datachunk, paritychunk, leaf_no, p_no);
+
+            std::cout << "\n== Summary ==\n"
+                    << "Leaf count: " << leaf_no << "\n"
+                    << "P items:    " << p_no    << "\n";
+
+            encoding_group = buildEncodingCombo(edges, datachunk, paritychunk);
+            
+            VCgroup = move(datachunk);
+            VCgroup.insert(VCgroup.end(), paritychunk.begin(), paritychunk.end());
+
+            return edges;
+        }
+
+        string buildEncodingCombo(
+            const std::vector<std::pair<dev::h256,dev::h256>>& edges,
+            const std::vector<dev::h256>& datachunk,
+            const std::vector<dev::h256>& paritychunk
+        ) {
+            // NodeComboBytes combo_out;
+
+            const size_t leaf_total = datachunk.size();
+
+            // 1) 建立 hash->下标 映射
+            std::unordered_map<dev::h256, size_t> idx_of;
+            idx_of.reserve(datachunk.size() + paritychunk.size());
+
+            for (size_t i = 0; i < datachunk.size(); ++i)
+                idx_of[datachunk[i]] = i;                       // 叶子编号: 0..leaf_total-1
+
+            for (size_t j = 0; j < paritychunk.size(); ++j)
+                idx_of[paritychunk[j]] = leaf_total + j;        // p 全局编号: leaf_total..leaf_total+P-1
+
+            // 2) 收集每个节点拥有哪些 parity（从 p->node 的边看）
+            std::unordered_set<dev::h256> parity_set(paritychunk.begin(), paritychunk.end());
+            std::unordered_map<dev::h256, std::vector<dev::h256>> node_parities;
+            for (const auto& e : edges) {
+                const auto& src = e.first;     // 可能是 leaf 或 p
+                const auto& dst = e.second;    // 节点
+                if (parity_set.find(src) != parity_set.end()) {
+                    node_parities[dst].push_back(src);
+                }
+            }
+
+            // 3) 对每个“有 p 的节点”，把 [叶子id们] + [p全局id们] 打包成一个 combo（vec<uint8_t>）
+            string combo;
+            for (const auto& [node, p_list] : node_parities) {
+                if (p_list.empty()) continue;
+
+                auto it = ancestors_leaves.find(node);
+                if (it == ancestors_leaves.end()) {
+                    std::cerr << "[buildEncodingCombo] node has p but no leaves in ancestors_leaves\n";
+                    continue;
+                }
+
+                const auto& leaves = it->second; // 叶子哈希列表
+
+                // std::vector<uint8_t> combo;     // 你的需求：用 uint8_t 装“编号”
+                // combo.reserve(leaves.size() + p_list.size());
+                combo.append("[");
+                cout << "[";
+
+                // 3.1 叶子编号（按 datachunk 下标升序会更稳定；这里按存储次序）
+                for (const auto& leaf_h : leaves) {
+                    auto itid = idx_of.find(leaf_h);
+                    if (itid == idx_of.end()) {
+                        std::cerr << "Leaf hash not in datachunk idx map\n";
+                        continue;
+                    }
+                    size_t id = itid->second;
+                    if (id > 255) {
+                        std::cerr << "Leaf id > 255; truncated to uint8_t\n";
+                    }
+                    // combo.push_back(static_cast<uint8_t>(id & 0xFF));
+                    append_u8(combo, (uint8_t)id);
+                    cout << static_cast<unsigned>((uint8_t)id);
+                }
+
+                combo.append("|"); // 添加 parity 和 datachunk 的分隔符
+                cout << "|";
+
+                // 3.2 parity 全局编号
+                for (const auto& ph : p_list) {
+                    auto itpid = idx_of.find(ph);
+                    if (itpid == idx_of.end()) {
+                        std::cerr << "Parity hash not in paritychunk idx map\n";
+                        continue;
+                    }
+                    size_t gid = itpid->second; // 已经是“叶子总数 + 本地”
+                    if (gid > 255) {
+                        std::cerr << "Parity global id > 255; truncated to uint8_t\n";
+                    }
+                    // combo.push_back(static_cast<uint8_t>(gid & 0xFF));
+                    append_u8(combo, (uint8_t)gid);
+                    cout << static_cast<unsigned>((uint8_t)gid);
+                }
+                combo.append("]");
+                cout << "]" << endl;
+                // combo_out.emplace(node, std::move(combo));
+            }
+
+            return combo;
+        }
+
     };
 }

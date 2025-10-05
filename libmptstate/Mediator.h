@@ -14,76 +14,29 @@
 // #include <libledger/DBInitializer.h>
 #pragma once
 
-#include <libmptstate/Eurasure.h>
-#include <libmptstate/MPTState.h>
+#include "Eurasure.h"
+#include "MPTState.h"
 #include <libdevcore/RLP.h>
 #include <tbb/tbb.h>
 #include <tbb/parallel_for.h>
 // #include <tbb/global_control.h>
-#include <tbb/task_scheduler_init.h>
+// #include <tbb/task_scheduler_init.h>
 #include <atomic>
 
 class Mediator{
 public:
     dev::mptstate::MPTState* mpt_ptr;
+    OverlayDB* m_db = NULL;
+    rocksdb::DB* ec_db = NULL;
     atomic<int> malicious_nodes{0};
     // std::unordered_map<dev::h256, StateLocation>* location_ptr;
 
-    Mediator(dev::mptstate::MPTState &mptstate){
+    Mediator(dev::mptstate::MPTState &mptstate, OverlayDB& db, rocksdb::DB& _db){
         mpt_ptr = &mptstate;
+        m_db = &db;
+        ec_db = &_db;
         // location_ptr = mptstate.stateHashToInfoMap;
     }
-    
-    // string at(h256 m_root, u160 _key) const
-    // {
-    //     bytesConstRef _k((byte const*)&_key, sizeof(u160));
-    //     std::cout<<"到达根节点,其下一个节点的hash/key为:"<< m_root <<
-    //     "||" << NibbleSlice(_k) <<std::endl;
-    //     return atAux(RLP(m_root), _k);
-    // }
-
-    // string atAux(RLP const& _here, NibbleSlice _key) const
-    // {
-    //     if (_here.isEmpty() || _here.isNull())
-    //         // not found.
-    //         return std::string();
-    //     unsigned itemCount = _here.itemCount();
-    //     assert(_here.isList() && (itemCount == 2 || itemCount == 17));
-    //     // 2024/10/12 _here[n]: 节点的hash值  _key:字典树的值
-    //     // itemcount=2时节点为 叶子节点 或 扩展节点
-    //     // 正常情况下 node(_hash) 是用来寻找 _hash 对应的节点函数(?)
-    //     // else则为 itemcount=17的情况，即为 分支节点
-    //     // 可知他需要根据key的第一个值(key[0])来判断他应该走哪个分支，然后根据hash寻找下一个节点
-        
-    //     /* 打印出一些中间值查看效果 */
-    //     // std::cout<<"---Entry func atAux---Finding key word: " << _key <<std::endl;
-
-    //     if (itemCount == 2)
-    //     {
-    //         auto k = keyOf(_here);
-    //         if (_key == k && isLeaf(_here))
-    //             // reached leaf and it's us
-    //             return _here[1].toString();
-    //         else if (_key.contains(k) && !isLeaf(_here))
-    //             // not yet at leaf and it might yet be us. onwards...
-    //             return atAux(_here[1].isList() ? _here[1] : RLP(_here[1].toHash<h256>()),
-    //                 _key.mid(k.size()));
-    //         else
-    //             // not us.
-    //             return std::string();
-    //     }
-    //     else
-    //     {
-    //         if (_key.size() == 0)
-    //             return _here[16].toString();
-    //         auto n = _here[_key[0]];
-    //         if (n.isEmpty())
-    //             return std::string();
-    //         else
-    //             // return atAux(n.isList() ? n : RLP(node(n.toHash<h256>())), _key.mid(1));
-    //             return atAux(n.isList() ? n : RLP(n.toHash<h256>()), _key.mid(1));
-    //     }
-    // }
 
     // 补0并且生成新的字符串
     string padWithNullBytes(const string& str, size_t offset){
@@ -132,6 +85,316 @@ public:
         return -1;
     }
 
+    inline std::string readChild(const std::string& packed, int idx) {
+        if (idx < 0 || idx >= 16) cout << "idx must be 0..15";
+        if (packed.empty())       cout << "packed empty";
+
+        size_t data_start = 0;
+        std::vector<int> order;
+
+        // 有 "{...}" 前缀：按列出的槽顺序定位
+        if (packed[0] == '{') {
+            cout << "Read branch node." << endl;
+            size_t rb = packed.find('}');
+            if (rb == std::string::npos) {
+                throw std::runtime_error("Malformed prefix: missing '}'");
+            }
+            order.reserve(rb - 1);
+            for (size_t i = 1; i < rb; ++i) {
+                unsigned char c = packed[i];
+                if (!std::isxdigit(c)) throw std::runtime_error("Malformed prefix: non-hex char");
+                int v = (c <= '9') ? (c - '0')
+                    : (c <= 'F' ? 10 + (c - 'A') : 10 + (c - 'a'));
+                if (v < 0 || v > 15) throw std::runtime_error("slot out of range in prefix");
+                order.push_back(v);
+            }
+            data_start = rb + 1;
+
+            const size_t need = order.size() * static_cast<size_t>(kChildLen);
+            if (packed.size() < data_start + need) {
+                throw std::runtime_error("packed too short for prefixed children");
+            }
+
+            // 找 idx 在前缀顺序中的位置
+            ssize_t pos = -1;
+            for (size_t i = 0; i < order.size(); ++i) {
+                if (order[i] == idx) { pos = static_cast<ssize_t>(i); break; }
+            }
+            if (pos < 0) {
+                throw std::runtime_error("idx not present in prefix list");
+            }
+
+            const size_t off = data_start + static_cast<size_t>(pos) * kChildLen;
+            return packed.substr(off, kChildLen); // 返回对应 11B
+        }
+
+        // 无前缀：就只有一个 11 字节，直接返回
+        if (packed.size() < static_cast<size_t>(kChildLen)) {
+            throw std::runtime_error("packed too short: " + std::to_string(packed.size()));
+        }
+
+    return packed.substr(0, kChildLen);
+}
+
+    // 远端根据元数据取回 ver -> chunk!
+    string remoteFetch(string& meta, uint16_t ver){
+        // sending meta to replica with version
+        string str;
+        auto MetaAndVer = ChunkBuilder::deserializeMetadata(meta);
+        MetaAndVer.first.printNodeMetadata(); // print meta menber one by one
+        uint8_t replicaID = MetaAndVer.first.m_node;
+        // fetch in loacl
+        scan_epoch_chunk(ec_db, (uint32_t)ver, replicaID);
+        return str;
+    }
+
+    string rebuildChunk(int block_number, size_t idx){
+        // get chunk order
+        string k = "O|";
+        k.append(dev::toString(block_number));
+        k.push_back('|');
+        k.append(dev::toString(idx));
+        string order_rlt;
+        if(ec_db != NULL){
+            ec_db->Get(rocksdb::ReadOptions(), k, &order_rlt);
+            if(order_rlt.empty()){
+                cout << "\x1b[32m[rebuildChunk]\x1b[0m Read failed" << endl;
+                return order_rlt; // 返回空字符串
+            }
+            else{
+                cout << "\x1b[32m[rebuildChunk]\x1b[0m Read chunk order successful!" << endl;
+            }
+        }
+        auto order_vec_h256 = deserialize_h256_list_raw(order_rlt);
+        
+        // fetch state and meta from dbs
+        auto& state_db = m_db;
+        auto& meta_db = ec_db;
+
+        string chunk;
+        for(size_t i=0; i<order_vec_h256.size(); i++){
+            auto& hash = order_vec_h256[i];
+            auto value = state_db -> lookup(hash);
+            chunk.append(value);
+
+            string meta; // its children metadata
+            meta_db -> Get(rocksdb::ReadOptions(), rocksdb::Slice(reinterpret_cast<const char*>(hash.data()), dev::h256::size), &meta);
+            // cout << "Meta:" << meta << endl;
+            auto cut = meta.find('}');
+            if(cut == string::npos){
+                // cout << "Can't found its children meta, maybe it is leaves?" << endl;
+            }
+            else{
+                chunk.append(meta.substr(cut+1));
+            }
+        }
+
+        // check the correctness
+        _MerkleTree mTree(dev::splitStr(chunk, 100));
+        h256 hash = mTree.root->hash;
+        cout << "\x1b[32m[rebuildChunk]\x1b[0m rebuild chunk hash[" << idx << "]:" << hash << endl; 
+
+        return chunk;
+    }
+
+    string remoteFetchState(const h256& childHash){
+        // remote read state, insert request sending 
+        string str;
+        if(m_db == NULL){
+            cout << "Open DB failed!" << endl;
+        }
+        else{
+            str = m_db->lookup(childHash);  
+        }
+        return str;
+    }
+
+    string node(const h256& childHash, const h256& parentHash, int childIdx){
+        if (!m_db) return {};
+        
+        string str = m_db->lookup(childHash);
+        
+        // test the case of lost node
+        bool lost_test = false;
+        if(parentHash != h256{}) 
+            lost_test = true;
+
+        if(!str.empty() && !lost_test){
+            // return str;
+        }
+        else{
+            // entre remote read phase 
+            cout << childHash << " is lost." << endl;
+            string metas;
+            ec_db->Get(rocksdb::ReadOptions(),
+                rocksdb::Slice(reinterpret_cast<const char*>(parentHash.data()), h256::size),
+                &metas);
+            auto s =  readChild(metas, childIdx);
+            auto MetaAndVer =ChunkBuilder::deserializeMetadata(s); // get lost target meta, prepare to remote fetching or recovering
+            auto ver = mpt_ptr->block_height - MetaAndVer.second;
+            string remote_str = remoteFetch(s, ver);
+            if(remote_str.empty()){
+                cout << "Remote read failed." << endl;
+                stateRecover(MetaAndVer.first, ver);
+            }
+            else{
+                str = remote_str; // 赋值给最后结果
+            }
+        }
+        return str;
+    }
+
+    string at(h256 _k, h256 root) {    
+        // auto n = NibbleSlice(b);
+        auto rlt = atAux(RLP(node(root, h256{}, -1)), bytesConstRef((byte const*)&_k, sizeof(_k)), root);
+        // cout << "at rlt = " << RLP(rlt) << std::endl;
+        // 执行时远程读归零
+        // execution_remote_read = 0;
+        return rlt;
+    }
+
+    string atAux(RLP _here, NibbleSlice _key, h256 selfHash){
+        std::cout << "---Entry func atAux---Finding key word: " << _key <<std::endl;
+        // std::cout << "isEmpty?" << _here.isEmpty() 
+        //     << "isNull?" << _here.isNull() <<std::endl;
+        
+        if (_here.isEmpty() || _here.isNull())
+            // not found.
+            return std::string();
+        unsigned itemCount = _here.itemCount();
+        assert(_here.isList() && (itemCount == 2 || itemCount == 17));
+
+        if (itemCount == 2)
+        {
+            // std::cout << "2=: " << _key <<std::endl;
+            auto k = keyOf(_here);
+            // std::cout << "  k   = " << k << endl;
+            // std::cout << " _key = " << _key << endl;
+            if (_key == k && isLeaf(_here)){
+                // reached leaf and it's us
+                // cout << "leaf here :" << _here << endl;
+                return _here[1].toString();
+            }
+            else if (_key.contains(k) && !isLeaf(_here))
+                // not yet at leaf and it might yet be us. onwards...
+                return atAux(_here[1].isList() ? _here[1] : RLP(node(_here[1].toHash<h256>(), selfHash, 0)),
+                    _key.mid(k.size()),
+                    _here[1].toHash<h256>());
+            else{
+                // not us.
+                // cout << " not us ? yes" <<endl;
+                return std::string();
+            }
+        }
+        else
+        {
+            // std::cout << "17=: " << _key <<std::endl;
+            if (_key.size() == 0)
+                return _here[16].toString();
+            auto n = _here[_key[0]];
+            if (n.isEmpty())
+                return std::string();
+            else
+                return atAux(n.isList() ? n : RLP(node(n.toHash<h256>(), selfHash, _key[0])), // _key-[0] is idx of tire
+                    _key.mid(1),
+                    n.toHash<h256>());
+        }
+    }
+    
+    string localreadChunk(uint16_t ver, uint8_t replicaID, bool Spliting = 0){
+        
+        // read data chunk 
+        string chunk = rebuildChunk(ver, static_cast<size_t>(replicaID));
+        // read parity chunk 
+        if(chunk.empty()){
+            chunk = scan_epoch_chunk(ec_db, (uint32_t)ver, replicaID);
+            if(chunk.size() >= 32)
+                chunk = chunk.substr(32); // 切除key的32bytes
+        }
+        return chunk;
+    }
+
+    void stateRecover(NodeMetadata& meta, uint16_t ver, bool Spliting = 0){
+        
+        // 记录时间和状态大小
+        auto t1 = std::chrono::steady_clock::now();
+
+        // 1. 解析 Nodemeta 
+        auto& d = meta;
+        auto _offset = d.m_offset; // 对应数据 偏移量
+        auto len = d.getDataLength() + d.getMetaSize(); // 对应数据 总长度
+        auto nodeId = d.getNodeNum();
+        size_t lost_node_idx;
+    
+        // 2. 根据编码组信息获取chunks
+        vector<vector<uint8_t>> recover_vec = scan_encoding_groups(*ec_db, ver, nodeId);
+
+        unordered_map<uint, string> chunk_pool;
+        for(auto& group: recover_vec){ // 取出一组编码组
+            
+            print_group(group);
+
+            // 2.1 删除分隔符'|'，并且计算k和m
+            auto it = find(group.begin(), group.end(), 0xFF);
+            const size_t ec_k = it - group.begin();
+            const size_t ec_m = group.end() - (it + 1);
+            group.erase(it);
+            // print_group(group);
+            // cout <<"\x1b[34m[stateRecover]\x1b[0m k= " << ec_k
+            //     <<" m=" << ec_m << endl;
+
+            deque<uint8_t> dq(group.begin(), group.end());
+            deque<uint8_t> wait_queue; 
+            size_t ready_chunk = 0;
+            vector<string> raw_data(ec_k + ec_m); // 准备进行编码的chunk数组
+            auto lost_pos = find(group.begin(), group.end(), (uint8_t)nodeId);
+            lost_node_idx = lost_pos - group.begin();
+            cout << "Lost chunk "<< nodeId <<" idx in this group:" << lost_node_idx << endl;
+
+            // 2.3 在本地尝试读取
+            while(!dq.empty()){
+                uint8_t replicaID = dq.front();
+                dq.pop_front();
+                string chunk = localreadChunk(ver, replicaID);
+                if(chunk.empty()){
+                    wait_queue.push_back(replicaID); // 读取失败，则远程读
+                    continue;
+                }
+                else{
+                    ready_chunk++;
+                    auto pos = find(group.begin(), group.end(), replicaID);
+                    raw_data[(size_t)(pos - group.begin())] = chunk; // 加入编码组
+                    chunk_pool[(uint)replicaID] = chunk;             // 加入缓存池，给下次循环使用
+                    
+                    cout << "\x1b[34m[stateRecover]\x1b[0m Read chunk " 
+                    << (uint)replicaID << " successful!" << endl;
+                }
+            }
+            // 远端读取 
+            while(!wait_queue.empty()){
+                /* 分发消息，处理远程传输的数据 …… */ break;
+            }
+
+            // 2.4 检测是否收到了足够的chunk
+            while(ready_chunk < ec_k){
+                /* 等待远程传输的数据 …… */
+            }
+
+            // 3. 收集足够的chunk，开始恢复操作
+            raw_data[lost_node_idx].clear(); // ！仅测试 把丢失的数据块清空
+            string lost_chunk = mpt_ptr->state_erasure->decodeFromMPT(raw_data, ec_m, lost_node_idx);
+            if(lost_chunk.empty()){
+                cout << " lost chunk is empty" << endl;
+            }
+            _MerkleTree mTree(dev::splitStr(lost_chunk, 100));
+            h256 hash = mTree.root->hash;
+            cout << "\x1b[34m[stateRecover]\x1b[0m recover chunk " << (uint)nodeId << " hash:" << hash << endl; 
+
+        }
+        
+    }
+    
+
     std::string readChunk(dev::h256 target, int location = 0, int nodeId = -1) {
         // auto state_location = mpt_ptr->stateHashToInfoMap[target];
         // 从目标节点读取 节点id 区块编号
@@ -142,12 +405,10 @@ public:
 
             auto chunk_location = locationChunk(target, location);
             // ×伪造节点沉默现象
-            int f = 32 * 0.3;
-            // cout << "chunk location :" << nodeId 
-            //     << " ,f :" << f << endl;
-            if(nodeId % 32 < f && (nodeId!=-1)){
-                return ret;
-            }
+            // int f = 32 * 0.3;
+            // if(nodeId % 32 < f && (nodeId!=-1)){
+            //     return ret;
+            // }
 
             ret = mpt_ptr->getState().db().lookup(target);
             if(ret == ""){
@@ -174,7 +435,7 @@ public:
         return ret;
     }
 
-    void recoverState(dev::h256& target_state, int idx, int location = 0){
+    void recoverState(h256& target_state, int idx, int location = 0){
         
         // 记录时间和状态大小
         auto t1 = std::chrono::steady_clock::now();
@@ -190,14 +451,7 @@ public:
         cout << " Target State :" << target_state << " Node:" << idx << " Location:" << location << endl;
 
         // 记录该状态BMT的下标 
-        int bmt_index;
-        if(location == 0){
-            auto state_location = mpt_ptr->stateHashToInfoMap[target_state];
-            bmt_index = state_location.block_number;
-        }
-        else{
-            bmt_index = location;
-        }
+        int bmt_index = location;
 
         // 获取对应BMT指针，并且获得 target 状态的所有编码组（其顺序为从底层到根
         auto tree = mpt_ptr->BMT_map[bmt_index];
