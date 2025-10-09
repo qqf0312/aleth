@@ -156,7 +156,7 @@ public:
     static OverlayDB openDB(boost::filesystem::path const& _path, h256 const& _genesisHash,
         WithExisting _we = WithExisting::Trust);
 
-    bool initVC();
+    bool initVC(string baseDir = {});
 
     void makeEC(int block_number, int thread_number);
 

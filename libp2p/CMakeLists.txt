@@ -13,7 +13,7 @@ target_include_directories(p2p PUBLIC
   "${CMAKE_CURRENT_LIST_DIR}"
 )
 
-target_link_libraries(p2p PUBLIC devcrypto devcore)
+target_link_libraries(p2p PUBLIC devcrypto devcore TBB::tbb)
 target_include_directories(p2p SYSTEM PRIVATE ${CRYPTOPP_INCLUDE_DIR})
 
 if(MINIUPNPC)

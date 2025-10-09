@@ -41,20 +41,6 @@ private:
 };
 int MyTimer::time_count = 0;
 
-int zipf_rand(int N, double skew)
-{
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_real_distribution<> dis(0.0, 1.0);
-
-    double b = pow(2.0, skew - 1.0);
-    double r = dis(gen);
-    int rank = (int)(N * pow(r, 1.0 / (1.0 - skew)));
-    if (rank >= N) rank = N - 1;
-    return rank;
-}
-
-
 int main(int argc, char** argv){
     cout << "Hello mptstate" << endl;
 
@@ -68,6 +54,7 @@ int main(int argc, char** argv){
     double skew = 0.0;
 
     int account_size = 1000000;
+    // 初始化MPTState
     dev::mptstate::MPTState mptState(u256(0), dev::mptstate::MPTState::openDB("./", sha3("0x1234")), BaseState::Empty);
     mptState.state_erasure = new ec::Eurasure();
     mptState.initVC();

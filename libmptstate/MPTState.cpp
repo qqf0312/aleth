@@ -565,12 +565,20 @@ void MPTState::commit()
 //     ifs.clear();
 // }
 
-bool MPTState::initVC()
+bool MPTState::initVC(string baseDir)
 {
+    namespace fs = boost::filesystem;
+    fs::path root = baseDir.empty() ? fs::path("./") : fs::path(std::string(baseDir));
+    fs::path dir  = (root.filename() == "vcstorage") ? root : (root / "vcstorage");
+
+    // 静默创建目录（已存在则无事发生）
+    boost::system::error_code ec;
+    fs::create_directories(dir, ec);
+
     rocksdb::Options options;
     options.create_if_missing = true;
     rocksdb::DB* raw;
-    rocksdb::Status status = rocksdb::DB::Open(options, "./vcstorage/", &raw);
+    rocksdb::Status status = rocksdb::DB::Open(options, dir.string(), &raw);
     assert(status.ok());
     // VCGroup::initTemplate(vc_db, subcommit_num, init_vc_size);
     // bf::basic_bloom_filter bloom_filter(false_positive_rate, max_state_size);

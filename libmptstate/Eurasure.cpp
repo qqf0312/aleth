@@ -2513,33 +2513,37 @@ std::string Eurasure::decodeFromMPT(std::vector<std::string> raw_data, int p_num
 
     // 通过记录每个字符串的长度来判断截取几个区间出来，这明显不是一个好方法
     // 因为缺失的状态不会给你具体的数值
-    auto lengh = raw_data.back().size();
-    std::vector<int> str_lengh;
+    size_t length = 0;
+    for(auto const& s: raw_data)
+        if(s.size() > length) length = s.size();
+
+    std::vector<int> str_length;
+    cout << "str size ";
     for(const auto& str: raw_data){
-        str_lengh.push_back(str.size());
+        str_length.push_back(str.size());
         cout << str.size() << " ";
     }
     cout << endl;
 
-    // std::cout<<"decode lengh :"<< lengh << ", decode number :" << _num <<std::endl;
+    // std::cout<<"decode length :"<< length << ", decode number :" << _num <<std::endl;
 
     uint8_t** ptrs = new uint8_t*[_num];
 
     memset(present, false, (_num) * sizeof(erasure_bool));
-    uint8_t* data = new uint8_t[_num * lengh];
-    memset(data, 0, _num * lengh * sizeof(uint8_t));
-    generatePtrsWithPara(lengh, data, present, ptrs, _num - p_number, p_number);
+    uint8_t* data = new uint8_t[_num * length];
+    memset(data, 0, _num * length * sizeof(uint8_t));
+    generatePtrsWithPara(length, data, present, ptrs, _num - p_number, p_number);
 
 
     for(size_t i = 0; i < _num; i++){
         if(raw_data[i] != ""){
             auto tmp = raw_data[i].c_str();
-            memcpy(ptrs[i], (uint8_t*)const_cast<char*>(tmp), str_lengh[i]);
+            memcpy(ptrs[i], (uint8_t*)const_cast<char*>(tmp), str_length[i]);
             present[i] = true;
         }
     }
 
-    erasure_encoder_parameters params = {_num, _num - p_number, lengh};
+    erasure_encoder_parameters params = {_num, _num - p_number, length};
     erasure_encoder* encoder = erasure_create_encoder(&params, ec_mode);
     erasure_recover(encoder, ptrs, present);
 
@@ -2550,20 +2554,20 @@ std::string Eurasure::decodeFromMPT(std::vector<std::string> raw_data, int p_num
         if(count < _num - p_number){
 
             const char* c_str = (char*)ptrs[count];
-            for(size_t i = lengh - 1; i >= 0; i--){
+            for(size_t i = length - 1; i >= 0; i--){
                 if(c_str[i] != '\0'){
                     // std::cout << " L = " << i + 1 << std::endl;
-                    str_lengh[count] = i + 1;
+                    str_length[count] = i + 1;
                     break;
                 }
             }
-            string value((const char*)ptrs[count], str_lengh[count]);
-            std::cout << "Decode::Data_Chunks[" << count << "] = " << str_lengh[count] << ":" << "RLP(value)" << std::endl; 
+            string value((const char*)ptrs[count], str_length[count]);
+            std::cout << "Decode::Data_Chunks[" << count << "] = " << str_length[count] << ":" << "RLP(value)" << std::endl; 
             if(count == lost_node)
                 return value;
         }
         else{
-            string value((const char*)ptrs[count], str_lengh[count]);
+            string value((const char*)ptrs[count], str_length[count]);
             std::cout << "Decode::Coded_Chunks[" << count << "] = " << "value" << std::endl;
         }   
     }

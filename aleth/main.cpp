@@ -38,6 +38,8 @@
 #include <libweb3jsonrpc/Debug.h>
 #include <libweb3jsonrpc/Test.h>
 
+#include <libmptstate/Mediator.h>
+
 #include "MinerAux.h"
 #include "AccountManager.h"
 
@@ -924,6 +926,17 @@ int main(int argc, char** argv)
     if (networkID != NoNetworkID)
         c.setNetworkId(networkID);
 
+    // 初始化 init MPTstate
+    dev::mptstate::MPTState mptState(u256(0), dev::mptstate::MPTState::openDB((db::databasePath() / "mptstate").string(), sha3("0x1234")), BaseState::Empty);
+    mptState.state_erasure = new ec::Eurasure();
+    mptState.initVC((db::databasePath() / "mptstate").string());
+    // 初始化 init Mediator
+    auto med = make_shared<Mediator>(mptState, mptState.getState().db(), *mptState.ec_db);
+    cout << "____!" << endl;
+    auto& mediator = *med;
+    med->setEra(med, c.eraCap());
+    // mediator.sendingStateRequest(dev::h256{});
+
     auto renderFullAddress = [&](Address const& _a) -> std::string
     {
         return toUUID(keyManager.uuid(_a)) + " - " + _a.hex();
@@ -1027,6 +1040,103 @@ int main(int argc, char** argv)
     signal(SIGABRT, &ExitHandler::exitHandler);
     signal(SIGTERM, &ExitHandler::exitHandler);
     signal(SIGINT, &ExitHandler::exitHandler);
+
+    sleep(4);
+    mediator.sendingStateRequest(dev::h256{});
+    // std::deque<uint8_t> dq;
+    // dq.push_back(uint8_t{0});
+    // dq.push_back(uint8_t{1});
+    // vector<uint8_t> v(dq.begin(), dq.end());
+    // if (auto e = mediator.era_.lock()) e->initECgroup((uint32_t){0}, (uint32_t){2}, v);
+    // mediator.sendingChunkRequest(0, dq);
+
+    // test mptstate
+    {   
+        // init 
+        int nodes_number = 4;
+        int fault_tolerance = 2;
+        int encoding_level = 2;
+
+        int _block_num = 1;
+        int _account_num = 20;
+        double skew = 0.0;
+        int balance = 1;
+        int account_size = 1000000;
+
+        vector<u160> processed_data;
+        unordered_map<int, vector<h256>> data_map;
+        // double skew = 0.0; // address skew
+        // writeToLog("Skew"+toString(skew), "output_block_number_log.txt");
+
+        // transaction inject
+        vector<vector<u160>> block_account_list;
+        block_account_list.push_back(vector<u160>());
+
+        vector<u160> last_account_list;
+
+        for (int i=1; i <= _block_num; ++i){
+            vector<u160> account_list;
+            if(!last_account_list.empty()){
+                account_list = last_account_list;
+            }
+            else{
+                for(int j=0; j<_account_num; j++){
+                    u160 tmp;
+                    if(skew){
+                        tmp = zipf_rand(account_size, skew);
+                        // cout<<" "<<tmp<<endl;
+                    }
+                    else{
+                        tmp = u160(rand() % account_size);
+                    }
+                    account_list.push_back(tmp);
+                    processed_data.push_back(tmp);
+                }
+            }
+            block_account_list.push_back(account_list);;
+        }
+
+        for (int i = 1; i <= _block_num; i++) {
+            vector<h256> data_set;
+
+            const auto& account_list = block_account_list[i];
+            for(const auto& tmp : account_list){
+                mptState.addBalance(tmp, u256(balance++)); 
+            }
+
+            // test transcaction execution
+            bool execute = false;
+            
+            // 1. 提交至内存
+            mptState.commit();
+
+            // 2. 编码   3. 划分状态
+            // mptState.getState().get_m_state().leftOvers(data_set); 
+            // data_map[i] = data_set; // 窃取一些h256
+            vector<int> _config = {nodes_number, fault_tolerance, encoding_level};
+            auto totalEncodedData = mptState.makeECFromMPT(i, _config);
+
+            // 4. 提交至DB（与编码块 # later storge Encoding result to another DB
+            // mptState.getState().db().commit(tmp);
+            mptState.getState().db().commit();
+
+            cout<<"ROOT HASH:"<< mptState.rootHash(true)<<std::endl;
+        }
+        // Mediator mediator(mptState, mptState.getState().db(), *mptState.ec_db);
+        // mediator.rebuildChunk(1,1);
+        // sleep(1);
+        if(true){
+            int _cnt = 0;
+            for(auto &id: processed_data){
+                mediator.at(sha3(Address(id)), mptState.rootHash());
+                _cnt++;
+                if(_cnt % 1000 == 0) 
+                    cout<< "Reading......" << _cnt << endl;
+                if(_cnt > 0) break;
+                cout << " \x1b[33m[Next account]\x1b[0m" << endl;
+            }
+        }
+    }
 
     unsigned n = c.blockChain().details().number;
     if (mining)

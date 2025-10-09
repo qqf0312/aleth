@@ -17,17 +17,29 @@
 #include "Eurasure.h"
 #include "MPTState.h"
 #include <libdevcore/RLP.h>
+#include <libethereum/Client.h>
 #include <tbb/tbb.h>
 #include <tbb/parallel_for.h>
+#include <tbb/concurrent_unordered_map.h>
+#include <memory>
 // #include <tbb/global_control.h>
 // #include <tbb/task_scheduler_init.h>
 #include <atomic>
+#include <boost/optional.hpp>
 
-class Mediator{
+class Mediator : public std::enable_shared_from_this<Mediator>{
 public:
     dev::mptstate::MPTState* mpt_ptr;
     OverlayDB* m_db = NULL;
     rocksdb::DB* ec_db = NULL;
+    dev::eth::Client* clt = NULL;
+    std::shared_ptr<dev::p2p::ErasureCapability> era_;
+    
+    using PromiseStr = std::promise<std::string>;
+    using PromiseVec = std::promise<vector<pair<uint32_t, string>>>;
+    tbb::concurrent_unordered_map<dev::h256, PromiseStr> pending_state;
+    tbb::concurrent_unordered_map<uint32_t, PromiseVec> pending_chunk;
+
     atomic<int> malicious_nodes{0};
     // std::unordered_map<dev::h256, StateLocation>* location_ptr;
 
@@ -38,6 +50,100 @@ public:
         // location_ptr = mptstate.stateHashToInfoMap;
     }
 
+    void setEra(shared_ptr<Mediator> self, std::shared_ptr<dev::p2p::ErasureCapability> const& era) {
+        // 如果之前已经有绑定，先解绑（可选）
+        cout << "__entry set Era!" << endl;
+        if (era_) {
+            era_->onECRequest = nullptr;
+            era_->onStateRequest = nullptr;
+            era_->onStateResponse = nullptr;
+            era_->onECResponse = nullptr;
+        }
+        cout << "de binding!" << endl;
+        era_ = era; // 只存 weak_ptr，不转移所有权
+
+        if (era_) {
+            // 把回调绑到 Mediator；用 weak_ptr 避免循环引用
+            cout << "binding Mediator success!" << endl;
+            std::weak_ptr<Mediator> wself = self;
+            era_->onECRequest = [wself](uint32_t epoch, uint32_t chunkID) -> std::string {
+                if(auto self = wself.lock()) return self->onECRequest(epoch, chunkID);
+            };
+            era_->onStateRequest = [wself](h256 hash) -> string {
+                if(auto self = wself.lock()) return self->onStateRequest(hash);
+            };
+            era_->onStateResponse = [wself](const h256& hash) {
+                if(auto self = wself.lock()) return self->onStateResponse(hash);
+            };
+            era_->onECResponse = [wself] (uint32_t epoch) {
+                if(auto self = wself.lock()) return self->onECResponse(epoch);
+            };
+            cout << "binding oncall func success!" << endl;
+        }
+    }
+
+    // 收到"Chunk Request"消息时候的回调函数
+    string onECRequest(uint32_t epoch, uint32_t chunkID) {
+        std::cout << "Mediator has got Request" << std::endl;
+        string chunk = localreadChunk(uint16_t(epoch), (uint8_t)chunkID);
+        return chunk;
+    }
+
+    // 收到"state Request"消息时候的回调函数
+    string onStateRequest(h256 hash) {
+        std::cout << "Mediator has got state Request" << hash << std::endl;
+        string state = remoteFetchState(hash);
+        return state;
+    }
+
+    // 收到state response的回调函数
+    void onStateResponse(const h256& hash) {
+        std::cout << "Mediator has got onStateResponse " << hash << std::endl;
+        string payload;
+        if(era_) {
+            if(!era_->tryGetState(hash, payload)){
+                return;
+            }
+        }
+        else{
+            return;
+        }
+        if (auto it = pending_state.find(hash); it != pending_state.end()) {
+            it->second.set_value(payload); // 交给线程
+            pending_state.unsafe_erase(it);
+        }
+    }
+
+    // 收到 Chunk response的回调函数
+    void onECResponse(uint32_t number) {
+        std::cout << "Mediator has got on Chunk Response in " << number << std::endl;
+        vector<pair<uint32_t, string>> chunks;
+        vector<pair<uint32_t, uint32_t>> del;
+        if(era_) {
+            auto & epochChunkProgress_ = era_->epochChunkProgress;
+            for(auto it = epochChunkProgress_.begin(); it != epochChunkProgress_.end(); ++it){
+                if(it->first.first == number){
+                    chunks.push_back(make_pair(it->first.second, it->second));
+                    del.push_back(make_pair(it->first.first, it->first.second));
+                    cout << "Fetch " << it->first.second << " chunkID, " 
+                    << "chunk len: "<< (it->second).size() << endl;
+                    // epochChunkProgress_.unsafe_erase(it);
+                }
+            }
+            for(auto& key: del){
+                epochChunkProgress_.unsafe_erase(key);
+            }
+        }
+        else{
+            return;
+        }
+
+        if (auto it = pending_chunk.find(number); it != pending_chunk.end()) {
+            it->second.set_value(chunks); // 交给原线程（这里是sendingstaterequest
+            pending_chunk.unsafe_erase(it);
+        }
+    }
+ 
     // 补0并且生成新的字符串
     string padWithNullBytes(const string& str, size_t offset){
         return string(offset, '\0') + str;
@@ -196,7 +302,8 @@ public:
 
         return chunk;
     }
-
+    
+    //Fetch remote state
     string remoteFetchState(const h256& childHash){
         // remote read state, insert request sending 
         string str;
@@ -207,6 +314,65 @@ public:
             str = m_db->lookup(childHash);  
         }
         return str;
+    }
+
+    string sendingStateRequest(const h256& hash){      
+        cout << "[sending State Request]" << endl;
+        std::chrono::milliseconds timeout = std::chrono::milliseconds(2000);
+        PromiseStr p; auto fut = p.get_future();
+        if (auto it = pending_state.find(hash); it != pending_state.end()) pending_state.unsafe_erase(it);
+        pending_state.insert({hash, PromiseStr{}}).first->second = std::move(p);
+        // era_->broadcastStateRequest(hash);
+        if (era_){
+            era_->broadcastStateRequest(hash);
+        }
+        else { 
+            pending_state.unsafe_erase(hash); 
+            cout << "Can not find " << endl;
+            return {}; 
+        }
+
+        if (fut.wait_for(timeout) == std::future_status::ready) {
+            auto s = fut.get(); 
+            pending_state.unsafe_erase(hash); 
+            cout << "Find it" << endl;
+            return s;
+        } 
+        else { 
+            pending_state.unsafe_erase(hash); 
+            cout << "Time out" << endl;
+            return {}; 
+        }  
+    }
+
+    vector<pair<uint32_t, string>> sendingChunkRequest(uint32_t number, const deque<uint8_t>& chunkIDqueue){      
+        cout << "[sending Chunk Request]" << endl;
+        std::chrono::milliseconds timeout = std::chrono::milliseconds(5000);
+        PromiseVec p; auto fut = p.get_future();
+        if (auto it = pending_chunk.find(number); it != pending_chunk.end()) pending_chunk.unsafe_erase(it);
+        pending_chunk.insert({number, PromiseVec{}}).first->second = std::move(p);
+        
+        if (era_) {
+            for(auto chunkID: chunkIDqueue){
+                era_->broadcastChunkRequest(number, (uint32_t)chunkID);
+            }
+        }
+        else { 
+            pending_chunk.unsafe_erase(number); cout << "Can not find Era" << endl;
+            return {}; 
+        }
+
+        if (fut.wait_for(timeout) == std::future_status::ready) {
+            auto s = fut.get(); 
+            pending_chunk.unsafe_erase(number); 
+            cout << "Find it" << endl;
+            return s;
+        } 
+        else { 
+            pending_chunk.unsafe_erase(number); 
+            cout << "Time out" << endl;
+            return {}; 
+        }  
     }
 
     string node(const h256& childHash, const h256& parentHash, int childIdx){
@@ -232,12 +398,15 @@ public:
             auto s =  readChild(metas, childIdx);
             auto MetaAndVer =ChunkBuilder::deserializeMetadata(s); // get lost target meta, prepare to remote fetching or recovering
             auto ver = mpt_ptr->block_height - MetaAndVer.second;
-            string remote_str = remoteFetch(s, ver);
-            if(remote_str.empty()){
-                cout << "Remote read failed." << endl;
+            // 尝试从远端拿数据
+            bool test_chunk_recover = true; // test 即使有字符串还是会进入恢复
+            string remote_str = sendingStateRequest(childHash);
+            if(remote_str.empty() || test_chunk_recover){
+                cout << "Remote read failed, start state recover." << endl;
                 stateRecover(MetaAndVer.first, ver);
             }
             else{
+                cout << "Success read remote State." << endl;
                 str = remote_str; // 赋值给最后结果
             }
         }
@@ -311,9 +480,11 @@ public:
             if(chunk.size() >= 32)
                 chunk = chunk.substr(32); // 切除key的32bytes
         }
+        cout << "[localreadChunk] return chunk size = " << chunk.size() << endl;
         return chunk;
     }
 
+    // 正版的recover
     void stateRecover(NodeMetadata& meta, uint16_t ver, bool Spliting = 0){
         
         // 记录时间和状态大小
@@ -339,6 +510,7 @@ public:
             const size_t ec_k = it - group.begin();
             const size_t ec_m = group.end() - (it + 1);
             group.erase(it);
+            if (era_) era_->initECgroup((uint32_t)ver, (uint32_t)ec_k, group);
             // print_group(group);
             // cout <<"\x1b[34m[stateRecover]\x1b[0m k= " << ec_k
             //     <<" m=" << ec_m << endl;
@@ -350,12 +522,19 @@ public:
             auto lost_pos = find(group.begin(), group.end(), (uint8_t)nodeId);
             lost_node_idx = lost_pos - group.begin();
             cout << "Lost chunk "<< nodeId <<" idx in this group:" << lost_node_idx << endl;
+            dq.erase(dq.begin() + static_cast<std::ptrdiff_t>(lost_node_idx)); // 丢失的chunk不应该存在该请求队列中
 
             // 2.3 在本地尝试读取
             while(!dq.empty()){
                 uint8_t replicaID = dq.front();
                 dq.pop_front();
                 string chunk = localreadChunk(ver, replicaID);
+                 
+                if(true){ 
+                    // test 专门仿造本地一点斗拿不到消息
+                    chunk.clear();
+                }
+
                 if(chunk.empty()){
                     wait_queue.push_back(replicaID); // 读取失败，则远程读
                     continue;
@@ -367,21 +546,40 @@ public:
                     chunk_pool[(uint)replicaID] = chunk;             // 加入缓存池，给下次循环使用
                     
                     cout << "\x1b[34m[stateRecover]\x1b[0m Read chunk " 
-                    << (uint)replicaID << " successful!" << endl;
+                    << (uint)replicaID << " successful!" 
+                    << "insert idx " << (size_t)(pos - group.begin()) << endl;
                 }
             }
             // 远端读取 
-            while(!wait_queue.empty()){
-                /* 分发消息，处理远程传输的数据 …… */ break;
+            if(!wait_queue.empty()){
+                /* 分发消息，处理远程传输的数据 …… */ 
+                vector<uint8_t> v(wait_queue.begin(), wait_queue.end());
+                if (era_) era_->initECgroup((uint32_t)ver, (uint32_t)ec_k - ready_chunk, v); // test k值应该不是k+m
+                auto IDValuePairs = sendingChunkRequest((uint32_t)ver, wait_queue); // 收到vector<chunkid, chunkvalue >
+                // 将收到的信息插入 raw data
+                for(auto& p: IDValuePairs){
+                    uint32_t replicaID = p.first; 
+                    string chunk = p.second;
+                    ready_chunk++;
+                    auto pos = find(group.begin(), group.end(), replicaID);
+                    raw_data[(size_t)(pos - group.begin())] = chunk; // 加入编码组
+                    chunk_pool[(uint)replicaID] = chunk;             // 加入缓存池，给下次循环使用
+                    cout << "\x1b[34m[stateRecover]\x1b[0m remote Read chunk " 
+                    << (uint)replicaID << " successful!" 
+                    << "insert idx " << (size_t)(pos - group.begin()) << endl;
+                }
             }
-
+            
             // 2.4 检测是否收到了足够的chunk
-            while(ready_chunk < ec_k){
+            // while(ready_chunk < ec_k){
                 /* 等待远程传输的数据 …… */
+            // }
+            if(ready_chunk < ec_k){
+                continue;
             }
 
             // 3. 收集足够的chunk，开始恢复操作
-            raw_data[lost_node_idx].clear(); // ！仅测试 把丢失的数据块清空
+            // raw_data[lost_node_idx].clear(); // ！仅测试 把丢失的数据块清空
             string lost_chunk = mpt_ptr->state_erasure->decodeFromMPT(raw_data, ec_m, lost_node_idx);
             if(lost_chunk.empty()){
                 cout << " lost chunk is empty" << endl;

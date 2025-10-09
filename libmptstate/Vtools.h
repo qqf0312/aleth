@@ -14,6 +14,55 @@
 using namespace std;
 using namespace dev;
 
+inline int zipf_rand(int N, double skew)
+{
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_real_distribution<> dis(0.0, 1.0);
+
+    double b = pow(2.0, skew - 1.0);
+    double r = dis(gen);
+    int rank = (int)(N * pow(r, 1.0 / (1.0 - skew)));
+    if (rank >= N) rank = N - 1;
+    return rank;
+}
+
+// 注入交易
+inline vector<vector<u160>> transactionsInject(){
+    vector<vector<u160>> block_account_list;
+    block_account_list.push_back(vector<u160>());
+
+    vector<u160> last_account_list;
+
+    int _block_num = 1; // 几个区块
+    int _account_num = 20; // 一个块内交易数量
+    int account_size = 1000000; 
+    double skew = 0.0;
+    for (int i=1; i <= _block_num; ++i){
+        vector<u160> account_list;
+        if(!last_account_list.empty()){
+            account_list = last_account_list;
+        }
+        else{
+            for(int j=0; j<_account_num; j++){
+                u160 tmp;
+                if(skew){
+                    tmp = zipf_rand(account_size, skew);
+                    // cout<<" "<<tmp<<endl;
+                }
+                else{
+                    tmp = u160(rand() % account_size);
+                }
+                account_list.push_back(tmp);
+                // processed_data.push_back(tmp);
+            }
+        }
+        block_account_list.push_back(account_list);;
+    }
+    return block_account_list;
+}
+
+
 // 一些计算内存大小的函数
 inline string printMemorySize(size_t bytes) {
     const double KB = 1024.0;
@@ -170,9 +219,9 @@ static inline std::string SeekKey(uint32_t epoch, uint8_t replicaID) {
 }
 
 // 这一个func可能只能读parity chunk
-static inline string scan_epoch_chunk(rocksdb::DB* db, uint32_t lo, uint8_t replicaID) {
+static inline string scan_epoch_chunk(rocksdb::DB* db, uint32_t lo, uint8_t replicaID) { // replicaID 其实就是 chunk id
     
-    // cout << "[scan_parity_chunk]" << lo << endl;
+    cout << "\x1b[35m[scanEpoChunk]\x1b[0m start" << lo << endl;
 
     string rlt; // 返回 [key:32bytes][value] 组成的字符串
 

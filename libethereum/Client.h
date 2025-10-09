@@ -212,6 +212,11 @@ public:
     ///< Get POW depending on sealengine it's using
     std::tuple<h256, h256, h256> getWork() override;
 
+    // 返回一个 ErasureCapaility 的句柄
+    std::shared_ptr<dev::p2p::ErasureCapability> eraCap() const {
+        return m_eraCap.lock();
+    }
+
 protected:
     /// Perform critical setup functions.
     /// Must be called in the constructor of the finally derived class.
