@@ -14,6 +14,7 @@
 // #include <libledger/DBInitializer.h>
 #pragma once
 
+#include "SimpleIni.h"
 #include "Eurasure.h"
 #include "MPTState.h"
 #include <libdevcore/RLP.h>
@@ -34,6 +35,9 @@ public:
     rocksdb::DB* ec_db = NULL;
     dev::eth::Client* clt = NULL;
     std::shared_ptr<dev::p2p::ErasureCapability> era_;
+    vector<string> Nodes;
+    string id;
+    uint* nodeArry;
     
     using PromiseStr = std::promise<std::string>;
     using PromiseVec = std::promise<vector<pair<uint32_t, string>>>;
@@ -48,6 +52,10 @@ public:
         m_db = &db;
         ec_db = &_db;
         // location_ptr = mptstate.stateHashToInfoMap;
+    }
+
+    void setNodeid(string self_id){
+        id = self_id;
     }
 
     void setEra(shared_ptr<Mediator> self, std::shared_ptr<dev::p2p::ErasureCapability> const& era) {
@@ -125,8 +133,8 @@ public:
                 if(it->first.first == number){
                     chunks.push_back(make_pair(it->first.second, it->second));
                     del.push_back(make_pair(it->first.first, it->first.second));
-                    cout << "Fetch " << it->first.second << " chunkID, " 
-                    << "chunk len: "<< (it->second).size() << endl;
+                    // cout << "Fetch " << it->first.second << " chunkID, " 
+                    // << "chunk len: "<< (it->second).size() << endl;
                     // epochChunkProgress_.unsafe_erase(it);
                 }
             }
@@ -264,11 +272,11 @@ public:
         if(ec_db != NULL){
             ec_db->Get(rocksdb::ReadOptions(), k, &order_rlt);
             if(order_rlt.empty()){
-                cout << "\x1b[32m[rebuildChunk]\x1b[0m Read failed" << endl;
+                cout << "\x1b[32m[rebuildChunk]\x1b[0m Read data chunk failed" << endl;
                 return order_rlt; // 返回空字符串
             }
             else{
-                cout << "\x1b[32m[rebuildChunk]\x1b[0m Read chunk order successful!" << endl;
+                // cout << "\x1b[32m[rebuildChunk]\x1b[0m Read chunk order successful!" << endl;
             }
         }
         auto order_vec_h256 = deserialize_h256_list_raw(order_rlt);
@@ -316,7 +324,7 @@ public:
         return str;
     }
 
-    string sendingStateRequest(const h256& hash){      
+    string sendingStateRequest(const h256& hash, uint32_t* nodeid = NULL){      
         cout << "[sending State Request]" << endl;
         std::chrono::milliseconds timeout = std::chrono::milliseconds(2000);
         PromiseStr p; auto fut = p.get_future();
@@ -324,7 +332,13 @@ public:
         pending_state.insert({hash, PromiseStr{}}).first->second = std::move(p);
         // era_->broadcastStateRequest(hash);
         if (era_){
-            era_->broadcastStateRequest(hash);
+            if(nodeid == NULL) { // 就是不知道目的的节点，所以广播看看谁有
+                era_->broadcastStateRequest(hash);
+            }
+            else{ // 定点投送目标的 node
+                NodeID target_node = NodeID(Nodes[*nodeid].substr(0, 128));
+                era_->sendStateRequest(target_node, hash);
+            }
         }
         else { 
             pending_state.unsafe_erase(hash); 
@@ -335,7 +349,7 @@ public:
         if (fut.wait_for(timeout) == std::future_status::ready) {
             auto s = fut.get(); 
             pending_state.unsafe_erase(hash); 
-            cout << "Find it" << endl;
+            cout << "Find State " << hash << endl;
             return s;
         } 
         else { 
@@ -345,7 +359,11 @@ public:
         }  
     }
 
-    vector<pair<uint32_t, string>> sendingChunkRequest(uint32_t number, const deque<uint8_t>& chunkIDqueue){      
+    static uint32_t nodeChunkMapping(uint32_t chunkId) { return chunkId; };
+
+    using Fn = uint32_t(*)(uint32_t);
+
+    vector<pair<uint32_t, string>> sendingChunkRequest(uint32_t number, const deque<uint8_t>& chunkIDqueue, Fn fn = NULL){      
         cout << "[sending Chunk Request]" << endl;
         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000);
         PromiseVec p; auto fut = p.get_future();
@@ -354,7 +372,15 @@ public:
         
         if (era_) {
             for(auto chunkID: chunkIDqueue){
-                era_->broadcastChunkRequest(number, (uint32_t)chunkID);
+                if(fn == NULL){
+                    era_->broadcastChunkRequest(number, (uint32_t)chunkID);
+                }
+                else {
+                    NodeID target_node = NodeID(Nodes[fn((uint32_t)chunkID) % Nodes.size()].substr(0, 128));
+                    era_->sendChunkRequest(target_node, number, (uint32_t)chunkID);
+                    cout << "[sending Chunk Request] sending chunk " << (uint32_t)chunkID
+                        << " to " << target_node << endl;
+                }
             }
         }
         else { 
@@ -365,7 +391,7 @@ public:
         if (fut.wait_for(timeout) == std::future_status::ready) {
             auto s = fut.get(); 
             pending_chunk.unsafe_erase(number); 
-            cout << "Find it" << endl;
+            cout << "Find chunks" << endl;
             return s;
         } 
         else { 
@@ -382,7 +408,7 @@ public:
         
         // test the case of lost node
         bool lost_test = false;
-        if(parentHash != h256{}) 
+        if(parentHash != h256{}) // 根节点没有父亲节点
             lost_test = true;
 
         if(!str.empty() && !lost_test){
@@ -390,17 +416,21 @@ public:
         }
         else{
             // entre remote read phase 
-            cout << childHash << " is lost." << endl;
+            // cout << childHash << " is lost." << endl;
             string metas;
             ec_db->Get(rocksdb::ReadOptions(),
                 rocksdb::Slice(reinterpret_cast<const char*>(parentHash.data()), h256::size),
                 &metas);
             auto s =  readChild(metas, childIdx);
-            auto MetaAndVer =ChunkBuilder::deserializeMetadata(s); // get lost target meta, prepare to remote fetching or recovering
+            auto MetaAndVer = ChunkBuilder::deserializeMetadata(s); // get lost target meta, prepare to remote fetching or recovering
+            auto nodeid = (uint32_t)MetaAndVer.first.m_node;
             auto ver = mpt_ptr->block_height - MetaAndVer.second;
+            if(nodeid == *nodeArry){
+                return str; // 本地读取
+            }
             // 尝试从远端拿数据
             bool test_chunk_recover = true; // test 即使有字符串还是会进入恢复
-            string remote_str = sendingStateRequest(childHash);
+            string remote_str = sendingStateRequest(childHash, &nodeid);
             if(remote_str.empty() || test_chunk_recover){
                 cout << "Remote read failed, start state recover." << endl;
                 stateRecover(MetaAndVer.first, ver);
@@ -480,7 +510,7 @@ public:
             if(chunk.size() >= 32)
                 chunk = chunk.substr(32); // 切除key的32bytes
         }
-        cout << "[localreadChunk] return chunk size = " << chunk.size() << endl;
+        // cout << "[localreadChunk] return chunk size = " << chunk.size() << endl;
         return chunk;
     }
 
@@ -528,12 +558,9 @@ public:
             while(!dq.empty()){
                 uint8_t replicaID = dq.front();
                 dq.pop_front();
-                string chunk = localreadChunk(ver, replicaID);
-                 
-                if(true){ 
-                    // test 专门仿造本地一点斗拿不到消息
-                    chunk.clear();
-                }
+                string chunk;
+                if(nodeArry && *nodeArry == (uint32_t)replicaID % Nodes.size()) // 检测是否属于本地
+                    chunk = localreadChunk(ver, replicaID);
 
                 if(chunk.empty()){
                     wait_queue.push_back(replicaID); // 读取失败，则远程读
@@ -554,8 +581,8 @@ public:
             if(!wait_queue.empty()){
                 /* 分发消息，处理远程传输的数据 …… */ 
                 vector<uint8_t> v(wait_queue.begin(), wait_queue.end());
-                if (era_) era_->initECgroup((uint32_t)ver, (uint32_t)ec_k - ready_chunk, v); // test k值应该不是k+m
-                auto IDValuePairs = sendingChunkRequest((uint32_t)ver, wait_queue); // 收到vector<chunkid, chunkvalue >
+                if (era_) era_->initECgroup((uint32_t)ver, (uint32_t)ec_k - ready_chunk, v); // 
+                auto IDValuePairs = sendingChunkRequest((uint32_t)ver, wait_queue, &Mediator::nodeChunkMapping); // 收到vector<chunkid, chunkvalue >
                 // 将收到的信息插入 raw data
                 for(auto& p: IDValuePairs){
                     uint32_t replicaID = p.first; 
@@ -569,7 +596,7 @@ public:
                     << "insert idx " << (size_t)(pos - group.begin()) << endl;
                 }
             }
-            
+
             // 2.4 检测是否收到了足够的chunk
             // while(ready_chunk < ec_k){
                 /* 等待远程传输的数据 …… */
@@ -581,9 +608,9 @@ public:
             // 3. 收集足够的chunk，开始恢复操作
             // raw_data[lost_node_idx].clear(); // ！仅测试 把丢失的数据块清空
             string lost_chunk = mpt_ptr->state_erasure->decodeFromMPT(raw_data, ec_m, lost_node_idx);
-            if(lost_chunk.empty()){
-                cout << " lost chunk is empty" << endl;
-            }
+            // if(lost_chunk.empty()){
+            //     cout << " lost chunk is empty" << endl;
+            // }
             _MerkleTree mTree(dev::splitStr(lost_chunk, 100));
             h256 hash = mTree.root->hash;
             cout << "\x1b[34m[stateRecover]\x1b[0m recover chunk " << (uint)nodeId << " hash:" << hash << endl; 
@@ -592,392 +619,124 @@ public:
         
     }
     
+    void runSyntheticLoadFromIni(const std::string& ini_path) {
+        SimpleIni ini;
+        ini.load(ini_path);
+        auto& mptState = *mpt_ptr; // 获取mptstate的实例
+        // ---- 读取参数（带默认值）----
+        // [ec]
+        const int nodes_number    = ini.getInt("ec", "nodes", 4);
+        const int fault_tolerance = ini.getInt("ec", "f", 2);
+        const int encoding_level  = ini.getInt("ec", "level", 2);
 
-    std::string readChunk(dev::h256 target, int location = 0, int nodeId = -1) {
-        // auto state_location = mpt_ptr->stateHashToInfoMap[target];
-        // 从目标节点读取 节点id 区块编号
-        std::string ret = ""; // 返回值放入其中 若为空则找不到
+        // [workload]
+        const int block_num       = ini.getInt("workload", "blocks", 1);
+        const int account_num     = ini.getInt("workload", "accounts_per_block", 20);
+        const double skew         = ini.getDouble("workload", "skew", 0.0);
+        const int balance_start   = ini.getInt("workload", "balance_start", 1);
+        const int account_size    = ini.getInt("workload", "account_space", 1'000'000);
 
-        // 从本地读
-        if(location){
+        // [readback]
+        const int do_read_back   = ini.getInt("readback", "enable", 1);
+        const int read_back_limit = ini.getInt("readback", "limit", 1);
 
-            auto chunk_location = locationChunk(target, location);
-            // ×伪造节点沉默现象
-            // int f = 32 * 0.3;
-            // if(nodeId % 32 < f && (nodeId!=-1)){
-            //     return ret;
-            // }
+        // [nodes] 读取 node0, node1, ... 连续到缺失为止（原样保留为 string）
+        std::vector<std::string> node_ids;
+        for (int i = 0; /*break inside*/ ; ++i) {
+            std::string key = "node" + std::to_string(i);
+            std::string v = ini.get("nodes", key, "");
+            if (v.empty()) break;
+            node_ids.push_back(v);
+        }
+        Nodes = node_ids;
 
-            ret = mpt_ptr->getState().db().lookup(target);
-            if(ret == ""){
-                // cout<< "state size : " << (mpt_ptr->BMT_map[1]).state_cache << endl;
-                auto tt = (mpt_ptr->BMT_map[location]).state_cache;
-                // for(auto it = tt.begin(); it!=tt.end(); it++){
-                //     cout << "ele:" << it->first << endl;
-                // }
-                if(tt.find(target)!=tt.end()){
-                    ret = tt.find(target) -> second;
-                    // cout << "fids" <<endl;
-                }
-                else{
-                    // cout << "??fu" <<endl;
+        // 计算 node 的逻辑 id
+        uint cnt = 0;
+        for(auto& node: Nodes){
+            if(node == id) {
+                nodeArry = &cnt;
+                break;
+            }
+            cnt++; 
+        }
+        if(nodeArry) {
+            cout << "\x1b[36m[runSyntheticLoadFromIni]\x1b[0m Node arry: " 
+                 << *nodeArry << endl;
+            if(era_) era_->id = nodeArry;
+        }
+
+        // ---- 打印一行配置摘要（可选）----
+        std::cout << "\x1b[36m[runSyntheticLoadFromIni]\x1b[0m "
+                  << "nodes=" << nodes_number
+                  << " f=" << fault_tolerance
+                  << " L=" << encoding_level
+                  << " blocks=" << block_num
+                  << " accounts/block=" << account_num
+                  << " skew=" << skew
+                  << " balance_start=" << balance_start
+                  << " account_space=" << account_size
+                  << " read_back=" << do_read_back
+                  << " limit=" << read_back_limit
+                  << " mapped_node_ids=" << node_ids.size()
+                  << std::endl;
+
+        // ---- 生成账户访问序列 ----
+        std::vector<u160> processed_data;
+        std::vector<std::vector<u160>> block_account_list;
+        block_account_list.push_back(std::vector<u160>()); // 1-based
+
+        std::vector<u160> last_account_list;
+
+        for (int i = 1; i <= block_num; ++i) {
+            std::vector<u160> account_list;
+            if (!last_account_list.empty()) {
+                account_list = last_account_list;
+            } else {
+                for (int j = 0; j < account_num; ++j) {
+                    u160 addr;
+                    if (skew != 0.0) addr = zipf_rand(account_size, skew);
+                    else             addr = u160(rand() % account_size); // 如需复现实验可换成固定种子 RNG
+                    account_list.push_back(addr);
+                    processed_data.push_back(addr);
                 }
             }
-            // std::cout << "Target : "<< target << ", value : "<< ret <<std::endl;
-        }
-        else{
-            // 从远程读取
+            block_account_list.push_back(std::move(account_list));
         }
 
-        // std::string ret; // 返回值放入其中 若为空则找不到
-        return ret;
-    }
+        // ---- 执行交易 → commit → EC 编码 → DB 落盘 ----
+        int cur_balance = balance_start;
 
-    void recoverState(h256& target_state, int idx, int location = 0){
-        
-        // 记录时间和状态大小
-        auto t1 = std::chrono::steady_clock::now();
+        for (int i = 1; i <= block_num; ++i) {
+            const auto& account_list = block_account_list[i];
 
-        // 获取该 target_state 的 Nodemeta
-        NodeMetadata d = readStateNodeMeta(target_state);
-        auto _offset = d.m_offset; // 对应数据 偏移量
-        auto len = d.getDataLength() + d.getMetaSize(); // 对应数据 总长度
-        auto nodeId = d.getNodeNum();
-        if(idx != nodeId){
-            idx = nodeId;
-        }
-        cout << " Target State :" << target_state << " Node:" << idx << " Location:" << location << endl;
-
-        // 记录该状态BMT的下标 
-        int bmt_index = location;
-
-        // 获取对应BMT指针，并且获得 target 状态的所有编码组（其顺序为从底层到根
-        auto tree = mpt_ptr->BMT_map[bmt_index];
-        cout<< tree.MerkleTrees.size() << " " << tree.state_cache.size() << endl;
-        auto target = (tree.MerkleTrees[idx].root)->hash;
-        cout << " Target Chunk :" << target <<endl;
-        
-        // std::cout<< tree.bmt_root <<std::endl;
-        
-        auto encoded_sets = tree.findAncestorsAndLeaves(target);
-
-        std::unordered_map<dev::h256, std::string> chunks_pool;
-
-        for(const auto& set: encoded_sets){
-            auto ancestor = tree.search(set.first);
-            std::cout << "ancestor hash :" << ancestor->_hash << std::endl;
-            if(ancestor->p.empty()){
-                std::cout << "This ancestor has no EC :" << std::endl;
-                continue;
+            for (const auto& a : account_list) {
+                mptState.addBalance(a, u256(cur_balance++));
             }
 
-            // if(test_coded == 0){
-            //     test_coded = 1;
-            //     continue;
-            // }
+            mptState.commit();
 
+            std::vector<int> cfg = {nodes_number, fault_tolerance, encoding_level};
+            auto totalEncodedData = mptState.makeECFromMPT(i, cfg);
+
+            mptState.getState().db().commit();
+
+            std::cout << "\x1b[32m[Block " << i << "]\x1b[0m ROOT HASH: "
+                      << mptState.rootHash(true) << std::endl;
+        }
+
+        // ---- 可选：读取验证 ----
+        if (do_read_back && !processed_data.empty() && read_back_limit > 0) {
             int cnt = 0;
-            std::vector<std::string> raw_data;
-            // 测试选项
-            bool Is_Test_Coding = true; // 解码完成后仍要继续往根编码组恢复
-            bool Is_Substr_Coding = true; // 是否将整个 chunk 切成 small_chunk 进行恢复
-
-            for(const auto& _target: set.second){
-                std::cout<<"---The Target of This round---\n" << _target <<std::endl;
-                // 后期可以改成并行请求  
-                // 之前已经读取过对应的 chunk
-                if(chunks_pool.count(_target)) {
-                    std::cout<<"The chunk is already in Pool" << std::endl;
-                    auto ret = chunks_pool[_target];
-                    
-                    // 切成 小块
-                    if(Is_Substr_Coding){
-                        ret = getSubstring(ret, _offset, len);
-                    }
-
-                    raw_data.push_back(ret);
-                    cnt++;
+            for (auto& id : processed_data) {
+                at(sha3(Address(id)), mptState.rootHash()); // 与你原逻辑一致
+                ++cnt;
+                if (cnt % 1000 == 0) {
+                    std::cout << "\x1b[34m[Reading]\x1b[0m ..." << cnt << std::endl;
                 }
-                else{
-                    std::string ret;
-                    
-                    if(_target != target){
-                        
-                        // 从本地磁盘或者其他节点获取
-                        ret = readChunk(_target, bmt_index);
-                        if(!ret.empty()){
-                            std::cout<<"The Size of " << "dev::RLP(ret)" << " is " << ret.size() 
-                                << ":" <<_target <<std::endl;
-                            chunks_pool[_target] = ret;
-                            cnt++;
-                        }
-                        // 切成 小块
-                        if(Is_Substr_Coding){
-                            ret = getSubstring(ret, _offset, len);
-                        }
-                        else
-                            std::cout << "Not Found!" << std::endl;
-                    }
-                    raw_data.push_back(ret);
-                }
-                std::cout<<"-------------------------------" << std::endl;
-            }
-            // 插入冗余块，但是他不需要插入内存中
-            for(const auto _p: ancestor->p){
-                auto _ret = readChunk(_p, bmt_index);
-
-                if(!_ret.empty()){
-                    cnt++;
-                    std::cout<<"encoded chunk insert!"<<std::endl;
-                } 
-                else{
-                    std::cout << "Not Found!" << std::endl;
-                }
-                // 切成 小块
-                if(Is_Substr_Coding){
-                    _ret = getSubstring(_ret, _offset, len);
-                }
-                raw_data.push_back(_ret);
-            }
-            // 如果收到的 chunks 数量满足该编码组的恢复阈值（总数：set.second.size()， 容错：(ancestor->p).size()
-            if(cnt >= raw_data.size() - ancestor->p.size()){
-                // 开始针对编码组来构造编码结构（如数据所在的位置）
-                std::cout << "It is ready to decoding!"<< std::endl;
-                std::cout << "Raw_data lengh is "<< raw_data.size() << ", p number is " << ancestor->p.size() << std::endl;
-                auto _str = mpt_ptr->state_erasure->decodeFromMPT(raw_data, ancestor->p.size());
-                // cout << _offset << " " << d.getDataLength() << " " << _str.size() << endl;
-                // cout << " Decode result :"<< RLP(_str.substr(_offset, d.getDataLength())) << endl;
-                
-                // 计算时间并输出日志
-                auto t2 = std::chrono::steady_clock::now();
-                auto dncoding_time = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0;
-                t2 = t1;
-                auto logStr = "Decoding " + dev::toString(raw_data.size()-ancestor->p.size()) + "DC and " + dev::toString(ancestor->p.size()) + " PC, each " 
-                    + printMemorySize(raw_data.back().size()) + ", costing " + dev::toString(dncoding_time) + "ms";
-                writeToLog(logStr,"output_decode_log.txt");
-
-                // 判断是否在testing; 若是，每一个编码组都会恢复一次
-                if(Is_Test_Coding){
-                    cout << "Repeating Decoding!" << endl;
-                    raw_data.clear();
-                    continue;
-                }
-                else{
-                    break;
-                }
-
-            }
-            else{
-                raw_data.clear();
-                std::cout << "No ready to decoding, turn to next round." << std::endl;
-                writeToLog("No ready to decoding, turn to next round. " + toString(target),"output_decode_log.txt");
+                if (cnt >= read_back_limit) break;
+                std::cout << " \x1b[33m[Next account]\x1b[0m" << std::endl;
             }
         }
-    }
-
-    void recoverStateInParallel(dev::h256& target_state, int idx, int location = 0){
-        
-        // tbb::global_control control(tbb::global_control::max_allowed_parallelism, 12);
-        // tbb::task_scheduler_init(6);
-
-        // 记录时间和状态大小
-        auto t1 = std::chrono::steady_clock::now();
-
-        // 获取该 target_state 的 Nodemeta
-        NodeMetadata d = readStateNodeMeta(target_state);
-
-        auto t1_1 = std::chrono::steady_clock::now();
-        
-        auto _offset = d.m_offset; // 对应数据 偏移量
-        auto len = d.getDataLength() + d.getMetaSize(); // 对应数据 总长度
-        auto nodeId = d.getNodeNum();
-        if(idx != nodeId){
-            idx = nodeId;
-        }
-
-        // 测试选项
-        bool Is_Test_Coding = false; // 解码完成后仍要继续往根编码组恢复
-        bool Is_Substr_Coding = false; // 是否将整个 chunk 切成 small_chunk 进行恢复
-
-        // 因为我们采用在前面的补0的策略，但是在实际中0依然消耗编码时间
-        // 为了测试切小块后的效果，我们将其转化成仅仅测试 offset = 0 的状态，以达到相同效果
-        if(Is_Substr_Coding){
-            if(_offset != 0){
-                return;
-            }
-        }
-
-        // cout << " Target State :" << target_state << " Node:" << idx << " Location:" << location << endl;
-        // cout << " offset :" << _offset << " len:" << len << endl;
-
-
-        // 记录该状态BMT的下标 
-        int bmt_index;
-        if(location == 0){
-            auto state_location = mpt_ptr->stateHashToInfoMap[target_state];
-            bmt_index = state_location.block_number;
-        }
-        else{
-            bmt_index = location;
-        }
-
-        auto t1_2 = std::chrono::steady_clock::now();
-
-        // 获取对应BMT指针，并且获得 target 状态的所有编码组（其顺序为从底层到根
-        auto tree = mpt_ptr->BMT_map[bmt_index];
-        // cout<< " Tree size:" <<tree.MerkleTrees.size() << " " << tree.state_cache.size() << endl;
-        auto target = (tree.MerkleTrees[idx].root)->hash;
-        // cout << " Target Chunk :" << target <<endl;
-        
-        // std::cout<< tree.bmt_root <<std::endl;
-        
-        auto encoded_sets = tree.findAncestorsAndLeaves(target);
-
-        std::unordered_map<dev::h256, std::string> chunks_pool;
-
-        auto t1_3 = std::chrono::steady_clock::now();
-
-        for(const auto& set: encoded_sets){
-            auto ancestor = tree.search(set.first);
-            // std::cout << "ancestor hash :" << ancestor->_hash << std::endl;
-            if(ancestor->p.empty()){
-                // std::cout << "This ancestor has no EC :" << std::endl;
-                continue;
-            }
-
-            // if(test_coded == 0){
-            //     test_coded = 1;
-            //     continue;
-            // }
-            
-            atomic<int> cnt(0);
-            std::vector<std::string> raw_data(set.second.size() + ancestor->p.size());
-            // cout<< "lengh dc:" << set.second.size() << "and and pc " <<  ancestor->p.size() << endl; 
-            
-            // NodeMetadata tmp = readStateNodeMeta(set.second[0]);
-            auto e = set.second[0];
-            auto nodeId_start = locationChunk(e, location);
-            // cout<< "start id:" << nodeId_start << endl; 
-
-            auto t1_4 = std::chrono::steady_clock::now();
-
-            // 并行请求
-            tbb::parallel_for(size_t(0), set.second.size() + ancestor->p.size(), [&](size_t i){
-                
-                // 插入冗余块，但是他不需要插入内存中
-                if(i >= set.second.size()){
-                    
-                    auto _p = (ancestor->p)[i - set.second.size()];
-                    auto _ret = readChunk(_p, bmt_index, nodeId_start + i);
-                    // cout<< " 校验块大小 before" << _ret.size() <<endl;
-                    if(!_ret.empty()){
-                        cnt++;
-                        // std::cout<<"encoded chunk insert!"<<std::endl;
-                    } 
-                    else{
-                        // std::cout << "Not Found!" << std::endl;
-                    }
-                    // 切成 小块
-                    if(Is_Substr_Coding){
-                        _ret = getSubstring(_ret, _offset, len);
-                        // cout << "After cutting len:" << _ret.size() << endl;
-                    }
-                    std::this_thread::sleep_for(std::chrono::microseconds(10000 * 2));
-                    raw_data[i] = _ret;
-                    // cout<< " 校验块大小 " << _ret.size() <<endl;
-                }
-                else{
-                    auto _target = (set.second)[i];
-                    // std::cout<<"---The Target of This round---" << _target <<std::endl;
-
-                    // 之前已经读取过对应的 chunk
-                    if(chunks_pool.find(_target) != chunks_pool.end()) {
-                        // std::cout<<"The chunk is already in Pool" << std::endl;
-                        auto ret = chunks_pool[_target];
-                        
-                        // 切成 小块
-                        if(Is_Substr_Coding){
-                            ret = getSubstring(ret, _offset, len);
-                            // cout << "After cutting len:" << ret.size() << endl;
-                        }
-
-                        raw_data[i] = ret;
-                        cnt++;
-                    }
-                    else{
-                        std::string ret;
-                        
-                        if(_target != target){
-                            
-                            // 从本地磁盘或者其他节点获取
-                            ret = readChunk(_target, bmt_index, nodeId_start + i);
-                            if(!ret.empty()){
-                                // std::cout<<"The Size of " << "dev::RLP(ret)" << " is " << ret.size() 
-                                //     << ":" <<_target <<std::endl;
-                                chunks_pool[_target] = ret;
-                                cnt++;
-                            }
-                            // 切成 小块
-                            if(Is_Substr_Coding){
-                                ret = getSubstring(ret, _offset, len);
-                                // cout << "After cutting len:" << ret.size() << endl;
-                            }
-                            else{
-                                // std::cout << "Not Found!" << std::endl;
-                            }
-                        }
-                        std::this_thread::sleep_for(std::chrono::microseconds(10000 * 2));
-                        raw_data[i] = ret;
-                    }
-                }
-                // std::cout<<"-------------------------------" << std::endl;
-            });
-
-            auto t1_5 = std::chrono::steady_clock::now();
-
-            // 如果收到的 chunks 数量满足该编码组的恢复阈值（总数：set.second.size()， 容错：(ancestor->p).size()
-            if(cnt >= raw_data.size() - ancestor->p.size()){
-                // 开始针对编码组来构造编码结构（如数据所在的位置）
-                // std::cout << "It is ready to decoding!"<< std::endl;
-                // std::cout << "Raw_data lengh is "<< raw_data.size() << ", p number is " << ancestor->p.size() << std::endl;
-                auto _str = mpt_ptr->state_erasure->decodeFromMPT(raw_data, ancestor->p.size(), idx);
-                // cout << _offset << " " << d.getDataLength() << " " << _str.size() << endl;
-                // cout << " Decode result :"<< RLP(_str.substr(_offset, d.getDataLength())) << endl;
-                
-                // 计算时间并输出日志
-                auto t2 = std::chrono::steady_clock::now();
-                auto handle_meta_time = std::chrono::duration_cast<std::chrono::microseconds>(t1_1 - t1).count() / 1000.0;
-                auto handle_BMT_time = std::chrono::duration_cast<std::chrono::microseconds>(t1_2 - t1_1).count() / 1000.0;
-                auto handle_time = std::chrono::duration_cast<std::chrono::microseconds>(t1_3 - t1_2).count() / 1000.0;
-                auto collect_chunk_time = std::chrono::duration_cast<std::chrono::microseconds>(t1_5 - t1_3).count() / 1000.0;
-                auto dncoding_round_time = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1_4).count() / 1000.0;
-                auto dncoding_time = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0;
-                t2 = t1;
-                auto logStr = "Decoding " + dev::toString(raw_data.size()-ancestor->p.size()) + "DC and " + dev::toString(ancestor->p.size()) + " PC, each " 
-                    + printMemorySize(raw_data.back().size()) + ", costing " + dev::toString(dncoding_time) + "/(" 
-                    + dev::toString(handle_meta_time) + " + " + dev::toString(handle_BMT_time) + " + " + dev::toString(handle_time) + " + " 
-                    + dev::toString(collect_chunk_time) + ") ms " + "Round:" + dev::toString(dncoding_round_time) + "ms";
-                writeToLog(logStr,"output_decode_log.txt");
-                auto logName = "output_decode_log" +  dev::toString(ancestor->p.size()) + ".txt";
-                writeToLog(logStr, logName);
-
-                // 判断是否在testing; 若是，每一个编码组都会恢复一次
-                if(Is_Test_Coding){
-                    // cout << "Repeating Decoding!" << endl;
-                    raw_data.clear();
-                    continue;
-                }
-                else{
-                    break;
-                }
-
-            }
-            else{
-                raw_data.clear();
-                malicious_nodes = 0;
-                // std::cout << "No ready to decoding, turn to next round." << std::endl;
-                // writeToLog("No ready to decoding, turn to next round. " + toString(target),"output_decode_log.txt");
-            }
-        }
+        std::cout << "\x1b[36m[runSyntheticLoadFromIni]\x1b[0m done." << std::endl;
     }
 };

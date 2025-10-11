@@ -1,8 +1,5 @@
 #pragma once
 // #include "VCGroup.h"
-extern "C" {
-#include "pointproofs.h"
-}
 #include <erasure-codes/liberasure.h>
 // #include <libblockchain/BlockChainInterface.h>
 // #include <libbloomfilter/bf/all.hpp>

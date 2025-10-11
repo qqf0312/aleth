@@ -10,6 +10,10 @@
 #include <libdevcore/FixedHash.h>
 #include <libdevcore/OverlayDB.h>
 #include "rocksdb/db.h"
+#include <tbb/tbb.h>
+extern "C" {
+#include "pointproofs.h"
+}
 
 using namespace std;
 using namespace dev;
@@ -386,181 +390,12 @@ static vector<vector<uint8_t>> scan_encoding_groups(rocksdb::DB& db, uint32_t ep
     return rlt;
 }
 
-
-// 把 data 按 offset 直接写入 out （自动扩容，支持 11B/任意长度）
-// 规则：
-//  - 要求 offset 按 11B 对齐（可按需放宽）；
-//  - 如果这个 11B 块已经写过，且内容不同 => 抛错；相同则跳过。
-// inline void insert_by_offset(std::string& out,
-//                              size_t offset,
-//                              const std::string& data,
-//                              bool strict_align = true)
-// {
-//     int kChildLen = 11;
-//     if (strict_align && (offset % kChildLen != 0)) {
-//         throw std::runtime_error("offset not 11B-aligned");
-//     }
-//     if (data.empty()) return;
-
-//     size_t need = offset + data.size();
-//     if (out.size() < need) out.resize(need, '\0');
-
-//     if (strict_align && data.size() == kChildLen) {
-//         size_t blk = offset / kChildLen;
-//         if (true) {
-//             // 已经填过，检查一致性
-//             if (std::memcmp(out.data() + offset, data.data(), kChildLen) != 0) {
-//                 throw std::runtime_error("conflicting write at same 11B block");
-//             }
-//             return; // 相同内容，直接跳过
-//         }
-//     } else {
-//         // 非 11B 粒度（比如最后一个不是 11B 或带其它长度）
-//         // 允许重写但做一致性检查（可按需放宽）
-//         if (offset + data.size() <= out.size()) {
-//             if (std::memcmp(out.data() + offset, data.data(), data.size()) == 0) {
-//                 // 一样就不重复写
-//                 return;
-//             }
-//         }
-//     }
-
-//     std::memcpy(&out[offset], data.data(), data.size());
-// }
-
-// ---------- ULEB128 ----------
-// static void putVarint(std::string& out, uint64_t v) {
-//     while (v >= 0x80) { out.push_back(char((v & 0x7F) | 0x80)); v >>= 7; }
-//     out.push_back(char(v & 0x7F));
-// }
-// static bool getVarint(const uint8_t*& p, const uint8_t* end, uint64_t& v) {
-//     v = 0; int shift = 0;
-//     while (p < end && shift <= 63) {
-//         uint8_t b = *p++;
-//         v |= (uint64_t)(b & 0x7F) << shift;
-//         if ((b & 0x80) == 0) return true;
-//         shift += 7;
-//     }
-//     return false;
-// }
-
-// // ---------- 从 h256 取前缀与 tag ----------
-// static inline const uint8_t* hbytes(const h256& h) {
-// #if 1
-//     return h.data();                 // 首选：FixedHash<32>::data()
-// #else
-//     // 后备：在你的 h256 没有 data() 时启用这支
-//     return reinterpret_cast<const uint8_t*>(&h);
-// #endif
-// }
-// static inline uint64_t prefix8_from_h256(const h256& h) {
-//     const uint8_t* p = hbytes(h);
-//     uint64_t v = 0; for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];  // 大端拼接
-//     return v;
-// }
-// static inline uint16_t tag16_from_h256(const h256& h) {
-//     const uint8_t* p = hbytes(h);
-//     return (uint16_t(p[30]) << 8) | uint16_t(p[31]);  // 取末尾 2 字节
-// }
-
-// // ---------- 紧凑打包：h256 列表 -> [ver=1][count][(8B前缀,2B tag)*] ----------
-// inline std::string pack_hashes_8B2B(const queue<h256>& hashes) {
-//     std::string out;
-//     out.reserve(1 + 10 * hashes.size()); // 粗略预估
-//     out.push_back(char(1));              // version
-//     putVarint(out, uint64_t(hashes.size()));
-//     for (auto tmp = hashes; !tmp.empty(); tmp.pop()) {
-//         auto h = tmp.front();
-//         const uint8_t* p = hbytes(h);
-//         out.append(reinterpret_cast<const char*>(p), 8);            // 8B 前缀（原始字节）
-//         uint16_t t = (uint16_t(p[30]) << 8) | uint16_t(p[31]);      // 2B tag（大端）
-//         out.push_back(char((t >> 8) & 0xFF));
-//         out.push_back(char(t & 0xFF));
-//     }
-//     return out;
-// }
-
-// // ---------- 解包：value -> (prefix8, tag16) ----------
-// struct PrefixTag { uint64_t prefix8; uint16_t tag16; };
-
-// inline std::vector<PrefixTag> unpack_prefix_tags(const std::string& value) {
-//     const uint8_t* p = (const uint8_t*)value.data();
-//     const uint8_t* end = p + value.size();
-//     if (p == end) throw std::runtime_error("empty value");
-//     if (*p++ != 1) throw std::runtime_error("unsupported version");
-//     uint64_t count = 0;
-//     if (!getVarint(p, end, count)) throw std::runtime_error("bad varint");
-
-//     std::vector<PrefixTag> out;
-//     out.reserve((size_t)count);
-//     for (uint64_t i = 0; i < count; ++i) {
-//         if (end - p < 10) throw std::runtime_error("truncated entry");
-//         uint64_t pref = 0; for (int k = 0; k < 8; ++k) pref = (pref << 8) | p[k];
-//         uint16_t tag = (uint16_t(p[8]) << 8) | uint16_t(p[9]);
-//         p += 10;
-//         out.push_back(PrefixTag{pref, tag});
-//     }
-//     if (p != end) throw std::runtime_error("extra bytes at end");
-//     return out;
-// }
-
-// // ---------- membership：value 中是否含有给定 h256（快速路径） ----------
-// inline bool contains_hash_8B2B(const std::string& value, const h256& h) {
-//     const uint8_t* p = (const uint8_t*)value.data();
-//     const uint8_t* end = p + value.size();
-//     if (p == end || *p++ != 1) return false;
-//     uint64_t count = 0; if (!getVarint(p, end, count)) return false;
-
-//     const uint8_t* hb = hbytes(h);
-//     uint64_t qpref = 0; for (int k = 0; k < 8; ++k) qpref = (qpref << 8) | hb[k];
-//     uint16_t qtag = (uint16_t(hb[30]) << 8) | uint16_t(hb[31]);
-
-//     for (uint64_t i = 0; i < count; ++i) {
-//         if (end - p < 10) return false;
-//         uint64_t pref = 0; for (int k = 0; k < 8; ++k) pref = (pref << 8) | p[k];
-//         uint16_t tag = (uint16_t(p[8]) << 8) | uint16_t(p[9]);
-//         p += 10;
-//         if (pref == qpref && tag == qtag) return true; // 命中
-//     }
-//     return false;
-// }
-
-
 inline void append_u64_be(std::string& s, uint64_t v){
     for (int i=7;i>=0;--i) s.push_back(char((v>>(8*i)) & 0xFF));
 }
 inline uint16_t read_u16_be(const char* p){
     return (uint16_t(uint8_t(p[0]))<<8) | uint16_t(uint8_t(p[1]));
 }
-
-// inline vector<pair<string, string>>
-// scan_by_u64prefix_check_u16tag_simple(OverlayDB* db, uint64_t prefix_be, uint16_t tag_be)
-// {
-//     // 1) 构造 8 字节前缀
-//     string start; start.reserve(8);
-//     append_u64_be(start, prefix_be);
-
-//     rocksdb::ReadOptions ro;
-//     std::unique_ptr<rocksdb::Iterator> it(db->NewIterator(ro));
-
-//     std::vector<std::pair<std::string,std::string>> out;
-//     for (it->Seek(start); it->Valid(); it->Next()) {
-//         const auto& k = it->key();
-
-//         // 前缀不匹配就停
-//         if (k.size() < 10) break; // 至少要有 8+2 才能读 tag
-//         if (std::memcmp(k.data(), start.data(), 8) != 0) break;
-
-//         // 2) 校验 tag（第 8..9 字节，大端）
-//         uint16_t tag_on_key = read_u16_be(k.data() + 8);
-//         if (tag_on_key != tag_be) continue;
-
-//         // 3) 命中则收集
-//         out.emplace_back(k.ToString(), it->value().ToString());
-//     }
-//     if (!it->status().ok()) throw std::runtime_error(it->status().ToString());
-//     return out;
-// }
 
 static inline std::string serialize_h256_queue_raw(const std::queue<h256>& q) {
     std::string out; out.reserve(size_t(q.size())*32);
@@ -579,3 +414,91 @@ static inline std::vector<h256> deserialize_h256_list_raw(const std::string& v) 
     for (size_t i=0;i<n;++i, p+=32) std::memcpy(out[i].data(), p, 32);
     return out;
 }
+
+class VCTemplate {
+  private:
+    std::string m_name;
+
+    pointproofs_params vc_param;
+    pointproofs_value vc_initValue;
+    pointproofs_commitment vc_commit;
+    pointproofs_proof *vc_proofs;
+    void initCommitment();
+
+  public:
+    /**
+     * VCTemplate初始化
+     * input:
+     *  _name: VCTemplate存储对应的名称
+     *  _size: VC数组大小
+     *  valueGroup: VC数组的初始化内容
+     *
+     *
+     **/
+    VCTemplate(const std::string &_name, int _size,
+               const vector<h256> &valueGroup)
+        : m_name(_name), m_size(_size) {
+        
+        vector<string> hashGroup;
+        for(auto chunk_hash: valueGroup){
+            hashGroup.push_back(toHex(chunk_hash));
+        }
+        // init value
+        m_name += std::to_string(m_size);
+        std::cout << m_name << " init value";
+        pointproofs_value initValues[m_size];
+        for(int i = 0; i < m_size; i++){
+            uint8_t *tmp = new uint8_t[hashGroup[i].length()];
+            memcpy(tmp, (uint8_t *)(const_cast<char *>(hashGroup[i].c_str())),hashGroup[i].length());
+            initValues[i].data = tmp;
+            initValues[i].len = hashGroup[i].length();
+        }
+        
+
+        // init param commit proofs
+        char seed[] = "this is a very long seed for pointproofs tests";
+        std::string flag("");
+
+        if (1) {
+            std::cout << " param";
+            pointproofs_paramgen((const uint8_t *)seed, sizeof(seed), 0, m_size,
+                                 &vc_param);
+
+            std::cout << " commitment";
+            if (pointproofs_commit(vc_param.prover, initValues, m_size,
+                                   &vc_commit))
+                std::cout << m_name << " ERROR:initCommit" << std::endl;
+
+            std::cout << " proofs";
+            vc_proofs = new pointproofs_proof[m_size];
+            tbb::parallel_for(
+                tbb::blocked_range<int>(0, m_size),
+                [&](const tbb::blocked_range<int> &_r) {
+                    for (int pos = _r.begin(); pos != _r.end(); ++pos) {
+                    
+                        pointproofs_prove(vc_param.prover, initValues, m_size,
+                                          pos, &vc_proofs[pos]);
+                        // std::cout << GetMS() - time1 << std::endl;
+                    }
+                });
+        }
+    }
+    VCTemplate() {}
+
+    ~VCTemplate() {
+        // delete[] vc_initValue.data;
+        pointproofs_free_commit(vc_commit);
+        pointproofs_free_prover_params(vc_param.prover);
+        pointproofs_free_verifier_params(vc_param.verifier);
+        for (int i = 0; i < m_size; i++)
+            pointproofs_free_proof(vc_proofs[i]);
+
+        delete[] vc_proofs;
+    };
+    int m_size;
+    // rocksdb::DB *m_db;
+    // bool writeDB();
+    // pointproofs_proof getProof(int _pos) { return vc_proofs[_pos]; }
+    // pointproofs_commitment getCommitment() { return vc_commit; }
+    // pointproofs_params getParams() { return vc_param; }
+};

@@ -124,6 +124,7 @@ int main(int argc, char** argv)
                                        NetworkConfig(publicIP, listenIP, listenPort, upnp);
     netPrefs.allowLocalDiscovery = allowLocalDiscovery;
     auto netData = contents(getDataDir() / fs::path(c_networkConfigFileName));
+    std::cout << "DataDir: " << getDataDir().string() << std::endl;
 
     Host h(c_programName, netPrefs, &netData);
     h.start();

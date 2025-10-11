@@ -355,6 +355,7 @@ std::unordered_map<h256, std::string> MPTState::makeECFromMPT(int block_number, 
     auto edges = bmt.buildIndexFromLeaves(VCgroup, encoding_group);
     persist_edges(*ec_db, edges, VCgroup, block_number);
     persist_encoding_group(*ec_db, encoding_group, block_number);
+    VCTemplate _vc("vector commitment", VCgroup.size(), VCgroup); // generate vc
     
     cb.StorageForChunks(chunksRlt, totalEncodedData, t_state_size, t_extraInfo_size, t_encoded_size); // 计算存储开销
     

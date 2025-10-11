@@ -5,6 +5,7 @@
 #include "MPTState.h"
 #include <libdevcore/SHA3.h>
 #include "Mediator.h"
+#include "SimpleIni.h"
 // #include <tbb/tbb.h>
 
 using namespace std;

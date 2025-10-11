@@ -85,6 +85,8 @@ public:
     function<void(h256)> onStateResponse; // 回应状态 回调函数
     bool tryGetState(const h256& hash, string& out);
 
+    uint* id = NULL; // MPTstate id
+
 private:
     std::shared_ptr<CapabilityHostFace> m_host;
 };

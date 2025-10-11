@@ -25,7 +25,7 @@ void ErasureCapability::onConnect(NodeID const& node, u256 const& /*peerCapVer*/
     broadcastCommit(0);
     // broadcastChunkRequest(1,1);
     // broadcastChunkMessage(1, 1, "hello chunk!");
-    broadcastStateRequest(h256{});
+    // broadcastStateRequest(h256{});
     // broadcastStateResponse(h256{}, "hellow state!");
 }
 
@@ -60,13 +60,9 @@ bool ErasureCapability::interpretCapabilityPacket(NodeID const& node, unsigned i
             cout << "[Erasure] onECRequest is empty, init plz." << endl;
         }
         // 发送 chunk 回去
-        if(number == 0){ // 测试专用啊。记得删除！！！！！！！！！！！！！！！！！！！！
-            if(chunkID == 0){
-                chunk = "hello this is chunk 0";
-            }
-            if(chunkID == 1){
-                chunk = "hello this is chunk 1";
-            }
+        if(number == 0){ // 测试专用，不删除其实也没事，反正不会有标号为 0 的区块！！！！！！！！！！！！！！！！！！！！
+            chunk = "hello this is chunk ";
+            chunk.append(toString((uint32_t)chunkID));
         }
 
         if(!chunk.empty()){
