@@ -1042,10 +1042,10 @@ int main(int argc, char** argv)
 
     sleep(4);
     // mediator.sendingStateRequest(dev::h256{});
-    std::deque<uint8_t> dq;
-    dq.push_back(uint8_t{1});
-    dq.push_back(uint8_t{2});
-    vector<uint8_t> v(dq.begin(), dq.end());
+    // std::deque<uint8_t> dq;
+    // dq.push_back(uint8_t{1});
+    // dq.push_back(uint8_t{2});
+    // vector<uint8_t> v(dq.begin(), dq.end());
     // mediator.sendingChunkRequest(0, dq);
     // test mptstate
     mediator.runSyntheticLoadFromIni("config.ini"); //nodeChunkMapping

@@ -18,6 +18,18 @@ extern "C" {
 using namespace std;
 using namespace dev;
 
+inline void write_times_csv_line(const std::string& path,
+                          const std::vector<double>& times_ns) { // 纳秒举例
+    std::ofstream ofs(path, std::ios::out | std::ios::trunc); // 覆盖写
+    if (!ofs) return;  // 简洁起见，实际可加异常/日志
+    for (size_t i = 0; i < times_ns.size(); ++i) {
+        ofs << times_ns[i];
+        if (i + 1 != times_ns.size()) ofs << ",";
+    }
+    ofs << "\n"; // 换行（可选）
+    ofs.flush();
+}
+
 inline int zipf_rand(int N, double skew)
 {
     static std::random_device rd;

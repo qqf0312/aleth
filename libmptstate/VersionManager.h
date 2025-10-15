@@ -947,7 +947,7 @@ public:
                             // 将对应子节点的 Nodemeta 和 nodeVersion 塞进一个 tmp 中
                             auto tmp = make_pair(m_dataSet[childHash].second, m_nodeVersions[childHash]);
                             childrenMeta.push_back(tmp);
-                            // childidx.push_back(childHash); // extension node no need 
+                            childidx.push_back(0); // extension node no need 
                         }
                     }
                     else{
@@ -996,7 +996,7 @@ public:
                             data = data + serializedData;
                             // 设置节点 hash 何其对应的 childrenNode 的 Metadata
                             str = str + serializedData;
-                            cout<< "l = " << str.length();
+                            // cout<< "l = " << str.length();
                             // nodemeta.printNodeMetadata(ver); 
                             // cout << ver << endl;
                             // cout << "deserializedMetaData" << endl;

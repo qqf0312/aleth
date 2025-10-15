@@ -235,6 +235,12 @@ public:
                 if (order[i] == idx) { pos = static_cast<ssize_t>(i); break; }
             }
             if (pos < 0) {
+                cout << "idx not present in prefix list " 
+                    << "pos = " << pos 
+                    << " idx = " << idx << endl;
+                for(auto& t: order){
+                    cout << t << " ";
+                }
                 throw std::runtime_error("idx not present in prefix list");
             }
 
@@ -329,7 +335,8 @@ public:
         std::chrono::milliseconds timeout = std::chrono::milliseconds(2000);
         PromiseStr p; auto fut = p.get_future();
         if (auto it = pending_state.find(hash); it != pending_state.end()) pending_state.unsafe_erase(it);
-        pending_state.insert({hash, PromiseStr{}}).first->second = std::move(p);
+        // pending_state.insert({hash, PromiseStr{}}).first->second = std::move(p);
+        pending_state.emplace(hash, std::move(p));
         // era_->broadcastStateRequest(hash);
         if (era_){
             if(nodeid == NULL) { // 就是不知道目的的节点，所以广播看看谁有
@@ -368,7 +375,8 @@ public:
         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000);
         PromiseVec p; auto fut = p.get_future();
         if (auto it = pending_chunk.find(number); it != pending_chunk.end()) pending_chunk.unsafe_erase(it);
-        pending_chunk.insert({number, PromiseVec{}}).first->second = std::move(p);
+        // pending_chunk.insert({number, PromiseVec{}}).first->second = std::move(p);
+        pending_chunk.emplace(number, std::move(p));
         
         if (era_) {
             for(auto chunkID: chunkIDqueue){
@@ -407,39 +415,41 @@ public:
         string str = m_db->lookup(childHash);
         
         // test the case of lost node
-        bool lost_test = false;
-        if(parentHash != h256{}) // 根节点没有父亲节点
-            lost_test = true;
 
-        if(!str.empty() && !lost_test){
-            // return str;
+        if(parentHash == h256{}/*根节点*/ || childIdx == 16/*branch本身就是有value*/){
+            return str;
+        }
+        
+        if(!str.empty()){ //直接可以找到数据,一般用在测试本地读取
+        //     return str;
+        }
+
+        
+        // entre remote read phase 
+        // cout << childHash << " is lost." << endl;
+        string metas;
+        ec_db->Get(rocksdb::ReadOptions(),
+            rocksdb::Slice(reinterpret_cast<const char*>(parentHash.data()), h256::size),
+            &metas);
+        auto s =  readChild(metas, childIdx);
+        auto MetaAndVer = ChunkBuilder::deserializeMetadata(s); // get lost target meta, prepare to remote fetching or recovering
+        auto nodeid = (uint32_t)MetaAndVer.first.m_node;
+        auto ver = mpt_ptr->block_height - MetaAndVer.second;
+        if(nodeid == *nodeArry){
+            return str; // 本地读取
+        }
+        // 尝试从远端拿数据
+        bool test_chunk_recover = false; // test 即使有字符串还是会进入恢复
+        string remote_str = sendingStateRequest(childHash, &nodeid);
+        if(remote_str.empty() || test_chunk_recover){
+            cout << "Remote read failed, start state recover." << endl;
+            stateRecover(MetaAndVer.first, ver);
         }
         else{
-            // entre remote read phase 
-            // cout << childHash << " is lost." << endl;
-            string metas;
-            ec_db->Get(rocksdb::ReadOptions(),
-                rocksdb::Slice(reinterpret_cast<const char*>(parentHash.data()), h256::size),
-                &metas);
-            auto s =  readChild(metas, childIdx);
-            auto MetaAndVer = ChunkBuilder::deserializeMetadata(s); // get lost target meta, prepare to remote fetching or recovering
-            auto nodeid = (uint32_t)MetaAndVer.first.m_node;
-            auto ver = mpt_ptr->block_height - MetaAndVer.second;
-            if(nodeid == *nodeArry){
-                return str; // 本地读取
-            }
-            // 尝试从远端拿数据
-            bool test_chunk_recover = true; // test 即使有字符串还是会进入恢复
-            string remote_str = sendingStateRequest(childHash, &nodeid);
-            if(remote_str.empty() || test_chunk_recover){
-                cout << "Remote read failed, start state recover." << endl;
-                stateRecover(MetaAndVer.first, ver);
-            }
-            else{
-                cout << "Success read remote State." << endl;
-                str = remote_str; // 赋值给最后结果
-            }
+            cout << "Success read remote State." << endl;
+            str = remote_str; // 赋值给最后结果
         }
+        
         return str;
     }
 
@@ -453,7 +463,7 @@ public:
     }
 
     string atAux(RLP _here, NibbleSlice _key, h256 selfHash){
-        std::cout << "---Entry func atAux---Finding key word: " << _key <<std::endl;
+        // std::cout << "---Entry func atAux---Finding key word: " << _key <<std::endl;
         // std::cout << "isEmpty?" << _here.isEmpty() 
         //     << "isNull?" << _here.isNull() <<std::endl;
         
@@ -618,7 +628,8 @@ public:
         }
         
     }
-    
+
+    using clock = chrono::steady_clock;
     void runSyntheticLoadFromIni(const std::string& ini_path) {
         SimpleIni ini;
         ini.load(ini_path);
@@ -630,15 +641,15 @@ public:
         const int encoding_level  = ini.getInt("ec", "level", 2);
 
         // [workload]
-        const int block_num       = ini.getInt("workload", "blocks", 1);
-        const int account_num     = ini.getInt("workload", "accounts_per_block", 20);
+        const int block_num       = ini.getInt("workload", "blocks", 2'000);
+        const int account_num     = ini.getInt("workload", "accounts_per_block", 1'000);
         const double skew         = ini.getDouble("workload", "skew", 0.0);
         const int balance_start   = ini.getInt("workload", "balance_start", 1);
         const int account_size    = ini.getInt("workload", "account_space", 1'000'000);
 
         // [readback]
         const int do_read_back   = ini.getInt("readback", "enable", 1);
-        const int read_back_limit = ini.getInt("readback", "limit", 1);
+        const int read_back_limit = ini.getInt("readback", "limit", 20'000);
 
         // [nodes] 读取 node0, node1, ... 连续到缺失为止（原样保留为 string）
         std::vector<std::string> node_ids;
@@ -705,13 +716,18 @@ public:
 
         // ---- 执行交易 → commit → EC 编码 → DB 落盘 ----
         int cur_balance = balance_start;
-
+        vector<double> ms_v;
         for (int i = 1; i <= block_num; ++i) {
             const auto& account_list = block_account_list[i];
-
+            auto t0_excute = clock::now();
             for (const auto& a : account_list) {
                 mptState.addBalance(a, u256(cur_balance++));
             }
+            auto t1_excute = clock::now();
+            auto ms_excute = std::chrono::duration_cast<std::chrono::microseconds>(t1_excute - t0_excute).count() / 1000.0;
+            cout << "execute cost = " << ms_excute << "ms\n";
+            if(i % 400 == 0) ms_v.push_back(ms_excute);
+            t0_excute = clock::now();
 
             mptState.commit();
 
@@ -723,18 +739,25 @@ public:
             std::cout << "\x1b[32m[Block " << i << "]\x1b[0m ROOT HASH: "
                       << mptState.rootHash(true) << std::endl;
         }
+        write_times_csv_line("tpstimes.txt",ms_v);
 
+        if(*nodeArry != 0) return; // 只有一个节点访问，避免了多个节点同时访问的能够产生的一些错误
         // ---- 可选：读取验证 ----
+        auto t0 = clock::now();
         if (do_read_back && !processed_data.empty() && read_back_limit > 0) {
             int cnt = 0;
             for (auto& id : processed_data) {
                 at(sha3(Address(id)), mptState.rootHash()); // 与你原逻辑一致
                 ++cnt;
                 if (cnt % 1000 == 0) {
-                    std::cout << "\x1b[34m[Reading]\x1b[0m ..." << cnt << std::endl;
+                    auto t1 = clock::now();
+                    auto ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+                    std::cout << "\x1b[34m[Reading]\x1b[0m ..." << cnt 
+                    << ", cost = "<< ms << "ms" << std::endl;
+                    t0 = clock::now();
                 }
                 if (cnt >= read_back_limit) break;
-                std::cout << " \x1b[33m[Next account]\x1b[0m" << std::endl;
+                // std::cout << " \x1b[33m[Next account]\x1b[0m" << std::endl;
             }
         }
         std::cout << "\x1b[36m[runSyntheticLoadFromIni]\x1b[0m done." << std::endl;
