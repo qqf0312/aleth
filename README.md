@@ -96,7 +96,7 @@ limit = 20000
 
 [nodes]
 # Define participating node identifiers (node0, node1, node2, ...)
-# These can be hostnames, IP addresses, or logical IDs.
+# Each nodeX corresponds to node's unique public key (its enode ID).
 node0 = nodeA
 node1 = nodeB
 node2 = nodeC
